@@ -1,7 +1,7 @@
 import type { ClawdbotConfig, PluginRuntime, RuntimeEnv } from "openclaw/plugin-sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { FeishuMessageEvent } from "./bot.js";
-import { handleFeishuMessage } from "./bot.js";
+import { buildFeishuAgentBody, handleFeishuMessage } from "./bot.js";
 import { setFeishuRuntime } from "./runtime.js";
 
 const {
@@ -61,11 +61,53 @@ async function dispatchMessage(params: { cfg: ClawdbotConfig; event: FeishuMessa
   });
 }
 
+describe("buildFeishuAgentBody", () => {
+  it("builds message id, speaker, quoted content, mentions, and permission notice in order", () => {
+    const body = buildFeishuAgentBody({
+      ctx: {
+        content: "hello world",
+        senderName: "Sender Name",
+        senderOpenId: "ou-sender",
+        messageId: "msg-42",
+        mentionTargets: [{ openId: "ou-target", name: "Target User", key: "@_user_1" }],
+      },
+      quotedContent: "previous message",
+      permissionErrorForAgent: {
+        code: 99991672,
+        message: "permission denied",
+        grantUrl: "https://open.feishu.cn/app/cli_test",
+      },
+    });
+
+    expect(body).toBe(
+      '[message_id: msg-42]\nSender Name: [Replying to: "previous message"]\n\nhello world\n\n[System: Your reply will automatically @mention: Target User. Do not write @xxx yourself.]\n\n[System: The bot encountered a Feishu API permission error. Please inform the user about this issue and provide the permission grant URL for the admin to authorize. Permission grant URL: https://open.feishu.cn/app/cli_test]',
+    );
+  });
+});
+
 describe("handleFeishuMessage command authorization", () => {
   const mockFinalizeInboundContext = vi.fn((ctx: unknown) => ctx);
   const mockDispatchReplyFromConfig = vi
     .fn()
     .mockResolvedValue({ queuedFinal: false, counts: { final: 1 } });
+  const mockWithReplyDispatcher = vi.fn(
+    async ({
+      dispatcher,
+      run,
+      onSettled,
+    }: Parameters<PluginRuntime["channel"]["reply"]["withReplyDispatcher"]>[0]) => {
+      try {
+        return await run();
+      } finally {
+        dispatcher.markComplete();
+        try {
+          await dispatcher.waitForIdle();
+        } finally {
+          await onSettled?.();
+        }
+      }
+    },
+  );
   const mockResolveCommandAuthorizedFromAuthorizers = vi.fn(() => false);
   const mockShouldComputeCommandAuthorized = vi.fn(() => true);
   const mockReadAllowFromStore = vi.fn().mockResolvedValue([]);
@@ -103,6 +145,7 @@ describe("handleFeishuMessage command authorization", () => {
           formatAgentEnvelope: vi.fn((params: { body: string }) => params.body),
           finalizeInboundContext: mockFinalizeInboundContext,
           dispatchReplyFromConfig: mockDispatchReplyFromConfig,
+          withReplyDispatcher: mockWithReplyDispatcher,
         },
         commands: {
           shouldComputeCommandAuthorized: mockShouldComputeCommandAuthorized,
@@ -196,7 +239,10 @@ describe("handleFeishuMessage command authorization", () => {
 
     await dispatchMessage({ cfg, event });
 
-    expect(mockReadAllowFromStore).toHaveBeenCalledWith("feishu");
+    expect(mockReadAllowFromStore).toHaveBeenCalledWith({
+      channel: "feishu",
+      accountId: "default",
+    });
     expect(mockResolveCommandAuthorizedFromAuthorizers).not.toHaveBeenCalled();
     expect(mockFinalizeInboundContext).toHaveBeenCalledTimes(1);
     expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1);
@@ -235,6 +281,7 @@ describe("handleFeishuMessage command authorization", () => {
 
     expect(mockUpsertPairingRequest).toHaveBeenCalledWith({
       channel: "feishu",
+      accountId: "default",
       id: "ou-unapproved",
       meta: { name: undefined },
     });
