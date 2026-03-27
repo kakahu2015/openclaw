@@ -1,0 +1,96 @@
+name: Build iOS IPA (Unsigned / Ad-hoc)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_config:
+        description: 'Build configuration'
+        required: false
+        default: 'Debug'
+        type: choice
+        options:
+          - Debug
+          - Release
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install pnpm
+        run: npm install -g pnpm@latest
+
+      - name: Install project dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: apps/ios
+        run: xcodegen generate
+
+      - name: Configure signing (ad-hoc / no team)
+        working-directory: apps/ios
+        run: |
+          cat > LocalSigning.xcconfig << 'EOF'
+          OPENCLAW_CODE_SIGN_STYLE = Manual
+          OPENCLAW_DEVELOPMENT_TEAM =
+          OPENCLAW_APP_BUNDLE_ID = ai.openclaw.client.local
+          OPENCLAW_SHARE_BUNDLE_ID = ai.openclaw.client.local.share
+          OPENCLAW_ACTIVITY_WIDGET_BUNDLE_ID = ai.openclaw.client.local.activitywidget
+          OPENCLAW_WATCH_APP_BUNDLE_ID = ai.openclaw.client.local.watchkitapp
+          OPENCLAW_WATCH_EXTENSION_BUNDLE_ID = ai.openclaw.client.local.watchkitapp.extension
+          OPENCLAW_APP_PROFILE =
+          OPENCLAW_SHARE_PROFILE =
+          EOF
+
+      - name: Build iOS app (xcodebuild)
+        working-directory: apps/ios
+        run: |
+          xcodebuild clean build \
+            -project OpenClaw.xcodeproj \
+            -scheme OpenClaw \
+            -destination 'generic/platform=iOS' \
+            -configuration ${{ inputs.build_config }} \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            BUILD_DIR="$(pwd)/build" \
+            | xcpretty || cat
+
+      - name: Package IPA
+        working-directory: apps/ios
+        run: |
+          APP_PATH="build/${{ inputs.build_config }}-iphoneos/OpenClaw.app"
+          PAYLOAD_DIR="build/Payload"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "❌ App not found at $APP_PATH"
+            echo "Available files:"
+            ls -la build/${{ inputs.build_config }}-iphoneos/ 2>/dev/null || echo "Build dir not found"
+            exit 1
+          fi
+
+          mkdir -p "$PAYLOAD_DIR"
+          cp -r "$APP_PATH" "$PAYLOAD_DIR/"
+          cd build
+          zip -r "OpenClaw-${{ inputs.build_config }}.ipa" Payload/
+          echo "✅ IPA created: build/OpenClaw-${{ inputs.build_config }}.ipa"
+          ls -lh "OpenClaw-${{ inputs.build_config }}.ipa"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenClaw-iOS-${{ inputs.build_config }}
+          path: apps/ios/build/OpenClaw-${{ inputs.build_config }}.ipa
+          retention-days: 30
