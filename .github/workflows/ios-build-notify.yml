@@ -8,4 +8,36 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "test"
+      - name: Set variables
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "status=${{ github.event.workflow_run.conclusion }}" >> "$GITHUB_OUTPUT"
+            echo "run_number=${{ github.event.workflow_run.run_number }}" >> "$GITHUB_OUTPUT"
+            echo "html_url=${{ github.event.workflow_run.html_url }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=manual" >> "$GITHUB_OUTPUT"
+            echo "run_number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+            echo "html_url=https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Send Telegram
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          STATUS="${{ steps.vars.outputs.status }}"
+          NUM="${{ steps.vars.outputs.run_number }}"
+          URL="${{ steps.vars.outputs.html_url }}"
+          if [ "$STATUS" = "success" ]; then
+            MSG="iOS build #$NUM 编译成功 ✅"
+          elif [ "$STATUS" = "failure" ]; then
+            MSG="iOS build #$NUM 编译失败 ❌"
+          else
+            echo "Status: $STATUS, skip notification"
+            exit 0
+          fi
+          MSG="$MSG
+$URL"
+          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TG_CHAT_ID}" \
+            --data-urlencode "text=$MSG"
