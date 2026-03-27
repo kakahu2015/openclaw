@@ -33,8 +33,7 @@ jobs:
           elif [ "$STATUS" = "failure" ]; then
             MSG="iOS build #$NUM 编译失败 ❌"
           else
-            echo "Status: $STATUS, skip notification"
-            exit 0
+            MSG="🔧 测试通知 #$NUM (status: $STATUS)"
           fi
           MSG=$(printf "%s\n%s" "$MSG" "$URL")
           echo "DEBUG: Token length=${#TG_BOT_TOKEN}, ChatID length=${#TG_CHAT_ID}"
