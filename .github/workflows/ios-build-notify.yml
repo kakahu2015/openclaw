@@ -11,12 +11,17 @@ jobs:
     steps:
       - name: Notify result
         env:
-          STATUS: ${{ github.event.workflow_run.conclusion || 'manual' }}
-          RUN_NUMBER: ${{ github.event.workflow_run.run_number || '0' }}
-          HTML_URL: ${{ github.event.workflow_run.html_url || format('https://github.com/{0}/actions/runs/{1}', github.repository, github.run_id) }}
+          STATUS: ${{ github.event.workflow_run.conclusion }}
+          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          HTML_URL: ${{ github.event.workflow_run.html_url }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
+          if [ -z "$STATUS" ]; then
+            STATUS="manual"
+            RUN_NUMBER="${{ github.run_number }}"
+            HTML_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
           if [ "$STATUS" = "success" ]; then
             MSG="iOS build #$RUN_NUMBER 编译成功 ✅"
           elif [ "$STATUS" = "failure" ]; then
