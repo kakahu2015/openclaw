@@ -18,14 +18,13 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Setup Xcode 16.4 (Swift 6.2)
+      - name: Setup Xcode 26.2 (Swift 6.2)
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '16.4'
+          xcode-version: '26.2'
 
       - name: Verify Swift version
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
           swift --version
           xcodebuild -version
 
@@ -68,7 +67,6 @@ jobs:
       - name: Build iOS app (xcodebuild)
         working-directory: apps/ios
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
           xcodebuild clean build \
             -project OpenClaw.xcodeproj \
             -scheme OpenClaw \
@@ -77,12 +75,7 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
-            BUILD_DIR="$(pwd)/build" \
-            2>&1 || true
-          # If xcpretty not available, just show raw output
-          if command -v xcpretty &> /dev/null; then
-            echo "xcpretty found"
-          fi
+            BUILD_DIR="$(pwd)/build"
 
       - name: Package IPA
         working-directory: apps/ios
