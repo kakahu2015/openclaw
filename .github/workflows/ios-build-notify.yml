@@ -4,33 +4,8 @@ on:
   workflow_run:
     workflows: ["Build iOS IPA (Unsigned / Ad-hoc)"]
     types: [completed]
-
 jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Notify result
-        env:
-          STATUS: ${{ github.event.workflow_run.conclusion }}
-          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
-          HTML_URL: ${{ github.event.workflow_run.html_url }}
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: |
-          if [ -z "$STATUS" ]; then
-            STATUS="manual"
-            RUN_NUMBER="${{ github.run_number }}"
-            HTML_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          fi
-          if [ "$STATUS" = "success" ]; then
-            MSG="iOS build #$RUN_NUMBER 编译成功 ✅"
-          elif [ "$STATUS" = "failure" ]; then
-            MSG="iOS build #$RUN_NUMBER 编译失败 ❌"
-          else
-            MSG="iOS build #$RUN_NUMBER 状态: $STATUS"
-          fi
-          MSG="$MSG
-$HTML_URL"
-          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${TG_CHAT_ID}" \
-            -d text="$MSG"
+      - run: echo "test"
