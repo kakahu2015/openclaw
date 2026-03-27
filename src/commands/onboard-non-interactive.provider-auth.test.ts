@@ -2,13 +2,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { MINIMAX_API_BASE_URL, MINIMAX_CN_API_BASE_URL } from "../../extensions/minimax/api.js";
 import {
-  MINIMAX_API_BASE_URL,
-  MINIMAX_CN_API_BASE_URL,
   ZAI_CODING_CN_BASE_URL,
   ZAI_CODING_GLOBAL_BASE_URL,
   ZAI_GLOBAL_BASE_URL,
-} from "../plugins/provider-model-definitions.js";
+} from "../../extensions/zai/api.js";
 import { makeTempWorkspace } from "../test-helpers/workspace.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import {
@@ -46,6 +45,7 @@ vi.mock("./onboard-non-interactive/local/auth-choice.plugin-providers.js", async
     { default: openrouterPlugin },
     { default: opencodePlugin },
     { default: sglangPlugin },
+    { default: cloudflareAiGatewayPlugin },
     { default: vercelAiGatewayPlugin },
     { default: vllmPlugin },
   ] = await Promise.all([
@@ -67,6 +67,7 @@ vi.mock("./onboard-non-interactive/local/auth-choice.plugin-providers.js", async
     import("../../extensions/openrouter/index.ts"),
     import("../../extensions/opencode/index.ts"),
     import("../../extensions/sglang/index.ts"),
+    import("../../extensions/cloudflare-ai-gateway/index.ts"),
     import("../../extensions/vercel-ai-gateway/index.ts"),
     import("../../extensions/vllm/index.ts"),
   ]);
@@ -111,6 +112,7 @@ vi.mock("./onboard-non-interactive/local/auth-choice.plugin-providers.js", async
     openrouterPlugin,
     opencodePlugin,
     sglangPlugin,
+    cloudflareAiGatewayPlugin,
     vercelAiGatewayPlugin,
     vllmPlugin,
   ]) {
