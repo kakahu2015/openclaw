@@ -18,6 +18,11 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Setup Xcode 16.4 (Swift 6.2)
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.4'
+
       - name: Checkout
         uses: actions/checkout@v4
 
