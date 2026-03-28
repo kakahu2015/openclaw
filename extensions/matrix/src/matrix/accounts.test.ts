@@ -256,6 +256,27 @@ describe("resolveMatrixAccount", () => {
     ).toEqual(["@alerts:example.org", "@main:example.org"]);
   });
 
+  it("honors injected env when detecting configured bot accounts", () => {
+    const env = {
+      MATRIX_HOMESERVER: "https://matrix.example.org",
+      MATRIX_USER_ID: "@main:example.org",
+      MATRIX_ACCESS_TOKEN: "main-token",
+      MATRIX_ALERTS_HOMESERVER: "https://matrix.example.org",
+      MATRIX_ALERTS_USER_ID: "@alerts:example.org",
+      MATRIX_ALERTS_ACCESS_TOKEN: "alerts-token",
+    } as NodeJS.ProcessEnv;
+
+    const cfg: CoreConfig = {
+      channels: {
+        matrix: {},
+      },
+    };
+
+    expect(
+      Array.from(resolveConfiguredMatrixBotUserIds({ cfg, accountId: "ops", env })).toSorted(),
+    ).toEqual(["@alerts:example.org", "@main:example.org"]);
+  });
+
   it("falls back to stored credentials when an access-token-only account omits userId", () => {
     loadMatrixCredentialsMock.mockImplementation(
       (env?: NodeJS.ProcessEnv, accountId?: string | null) =>
