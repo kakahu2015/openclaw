@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LookupFn } from "../../runtime-api.js";
+import { installMatrixTestRuntime } from "../test-runtime.js";
 import type { CoreConfig } from "../types.js";
 import {
   getMatrixScopedEnvVarNames,
@@ -163,6 +164,33 @@ describe("resolveMatrixConfig", () => {
 
     const resolved = resolveMatrixConfigForAccount(cfg, "ops", env);
     expect(resolved.accessToken).toBe("ops-token");
+  });
+
+  it("does not resolve account password SecretRefs when scoped token auth is configured", () => {
+    const cfg = {
+      channels: {
+        matrix: {
+          accounts: {
+            ops: {
+              homeserver: "https://ops.example.org",
+              password: { source: "env", provider: "default", id: "MATRIX_OPS_PASSWORD" },
+            },
+          },
+        },
+      },
+      secrets: {
+        defaults: {
+          env: "default",
+        },
+      },
+    } as CoreConfig;
+    const env = {
+      MATRIX_OPS_ACCESS_TOKEN: "ops-token",
+    } as NodeJS.ProcessEnv;
+
+    const resolved = resolveMatrixConfigForAccount(cfg, "ops", env);
+    expect(resolved.accessToken).toBe("ops-token");
+    expect(resolved.password).toBeUndefined();
   });
 
   it("keeps unresolved accessToken SecretRef errors when env fallback is missing", () => {
@@ -859,6 +887,51 @@ describe("resolveMatrixAuth", () => {
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
+  });
+
+  it("does not resolve inactive password SecretRefs when scoped token auth wins", async () => {
+    const doRequestSpy = vi.spyOn(sdkModule.MatrixClient.prototype, "doRequest").mockResolvedValue({
+      user_id: "@ops:example.org",
+      device_id: "OPSDEVICE",
+    });
+
+    const cfg = {
+      channels: {
+        matrix: {
+          accounts: {
+            ops: {
+              homeserver: "https://matrix.example.org",
+              password: { source: "env", provider: "default", id: "MATRIX_OPS_PASSWORD" },
+            },
+          },
+        },
+      },
+      secrets: {
+        defaults: {
+          env: "default",
+        },
+      },
+    } as CoreConfig;
+
+    installMatrixTestRuntime({ cfg });
+
+    const auth = await resolveMatrixAuth({
+      cfg,
+      env: {
+        MATRIX_OPS_ACCESS_TOKEN: "ops-token",
+      } as NodeJS.ProcessEnv,
+      accountId: "ops",
+    });
+
+    expect(doRequestSpy).toHaveBeenCalledWith("GET", "/_matrix/client/v3/account/whoami");
+    expect(auth).toMatchObject({
+      accountId: "ops",
+      homeserver: "https://matrix.example.org",
+      userId: "@ops:example.org",
+      accessToken: "ops-token",
+      deviceId: "OPSDEVICE",
+      password: undefined,
+    });
   });
 
   it("uses config deviceId with cached credentials when token is loaded from cache", async () => {

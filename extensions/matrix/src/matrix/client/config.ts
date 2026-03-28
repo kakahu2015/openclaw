@@ -75,9 +75,13 @@ function clean(
     env?: NodeJS.ProcessEnv;
     config?: Pick<CoreConfig, "secrets">;
     allowEnvSecretRefFallback?: boolean;
+    suppressSecretRef?: boolean;
   },
 ): string {
   const ref = coerceSecretRef(value, opts?.config?.secrets?.defaults);
+  if (opts?.suppressSecretRef && ref) {
+    return "";
+  }
   const normalizedValue = opts?.allowEnvSecretRefFallback
     ? ref?.source === "env"
       ? (readEnvSecretRefFallback({
@@ -129,6 +133,37 @@ type MatrixConfiguredAuthInput = {
   value: unknown;
   path: string;
 };
+
+function hasConfiguredSecretInputValue(value: unknown, cfg: Pick<CoreConfig, "secrets">): boolean {
+  return (
+    (typeof value === "string" && value.trim().length > 0) ||
+    Boolean(coerceSecretRef(value, cfg.secrets?.defaults))
+  );
+}
+
+function hasConfiguredMatrixAccessTokenSource(params: {
+  cfg: CoreConfig;
+  env: NodeJS.ProcessEnv;
+  accountId: string;
+}): boolean {
+  const normalizedAccountId = normalizeAccountId(params.accountId);
+  const account = findMatrixAccountConfig(params.cfg, normalizedAccountId) ?? {};
+  const scopedAccessTokenVar = getMatrixScopedEnvVarNames(normalizedAccountId).accessToken;
+  if (
+    hasConfiguredSecretInputValue(account.accessToken, params.cfg) ||
+    clean(params.env[scopedAccessTokenVar], scopedAccessTokenVar).length > 0
+  ) {
+    return true;
+  }
+  if (normalizedAccountId !== DEFAULT_ACCOUNT_ID) {
+    return false;
+  }
+  const matrix = resolveMatrixBaseConfig(params.cfg);
+  return (
+    hasConfiguredSecretInputValue(matrix.accessToken, params.cfg) ||
+    clean(params.env.MATRIX_ACCESS_TOKEN, "MATRIX_ACCESS_TOKEN").length > 0
+  );
+}
 
 function resolveConfiguredMatrixAuthInput(params: {
   cfg: CoreConfig;
@@ -218,12 +253,14 @@ function readMatrixBaseConfigField(
   opts?: {
     env?: NodeJS.ProcessEnv;
     config?: Pick<CoreConfig, "secrets">;
+    suppressSecretRef?: boolean;
   },
 ): string {
   return clean(matrix[field], resolveMatrixBaseConfigFieldPath(field), {
     env: opts?.env,
     config: opts?.config,
     allowEnvSecretRefFallback: shouldAllowEnvSecretRefFallback(field),
+    suppressSecretRef: opts?.suppressSecretRef,
   });
 }
 
@@ -235,12 +272,14 @@ function readMatrixAccountConfigField(
   opts?: {
     env?: NodeJS.ProcessEnv;
     config?: Pick<CoreConfig, "secrets">;
+    suppressSecretRef?: boolean;
   },
 ): string {
   return clean(account[field], resolveMatrixConfigFieldPath(cfg, accountId, field), {
     env: opts?.env,
     config: opts?.config,
     allowEnvSecretRefFallback: shouldAllowEnvSecretRefFallback(field),
+    suppressSecretRef: opts?.suppressSecretRef,
   });
 }
 
@@ -414,6 +453,11 @@ export function resolveMatrixConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): MatrixResolvedConfig {
   const matrix = resolveMatrixBaseConfig(cfg);
+  const suppressInactivePasswordSecretRef = hasConfiguredMatrixAccessTokenSource({
+    cfg,
+    env,
+    accountId: DEFAULT_ACCOUNT_ID,
+  });
   const fieldReadOptions = {
     env,
     config: cfg,
@@ -427,7 +471,10 @@ export function resolveMatrixConfig(
       homeserver: readMatrixBaseConfigField(matrix, "homeserver", fieldReadOptions),
       userId: readMatrixBaseConfigField(matrix, "userId", fieldReadOptions),
       accessToken: readMatrixBaseConfigField(matrix, "accessToken", fieldReadOptions),
-      password: readMatrixBaseConfigField(matrix, "password", fieldReadOptions),
+      password: readMatrixBaseConfigField(matrix, "password", {
+        ...fieldReadOptions,
+        suppressSecretRef: suppressInactivePasswordSecretRef,
+      }),
       deviceId: readMatrixBaseConfigField(matrix, "deviceId", fieldReadOptions),
       deviceName: readMatrixBaseConfigField(matrix, "deviceName", fieldReadOptions),
     },
@@ -457,6 +504,11 @@ export function resolveMatrixConfigForAccount(
   const matrix = resolveMatrixBaseConfig(cfg);
   const account = findMatrixAccountConfig(cfg, accountId) ?? {};
   const normalizedAccountId = normalizeAccountId(accountId);
+  const suppressInactivePasswordSecretRef = hasConfiguredMatrixAccessTokenSource({
+    cfg,
+    env,
+    accountId: normalizedAccountId,
+  });
   const fieldReadOptions = {
     env,
     config: cfg,
@@ -464,7 +516,10 @@ export function resolveMatrixConfigForAccount(
   const scopedEnv = resolveScopedMatrixEnvConfig(normalizedAccountId, env);
   const globalEnv = resolveGlobalMatrixEnvConfig(env);
   const accountField = (field: MatrixConfigStringField) =>
-    readMatrixAccountConfigField(cfg, normalizedAccountId, account, field, fieldReadOptions);
+    readMatrixAccountConfigField(cfg, normalizedAccountId, account, field, {
+      ...fieldReadOptions,
+      suppressSecretRef: field === "password" ? suppressInactivePasswordSecretRef : undefined,
+    });
   const resolvedStrings = resolveMatrixAccountStringValues({
     accountId: normalizedAccountId,
     account: {
@@ -480,7 +535,10 @@ export function resolveMatrixConfigForAccount(
       homeserver: readMatrixBaseConfigField(matrix, "homeserver", fieldReadOptions),
       userId: readMatrixBaseConfigField(matrix, "userId", fieldReadOptions),
       accessToken: readMatrixBaseConfigField(matrix, "accessToken", fieldReadOptions),
-      password: readMatrixBaseConfigField(matrix, "password", fieldReadOptions),
+      password: readMatrixBaseConfigField(matrix, "password", {
+        ...fieldReadOptions,
+        suppressSecretRef: suppressInactivePasswordSecretRef,
+      }),
       deviceId: readMatrixBaseConfigField(matrix, "deviceId", fieldReadOptions),
       deviceName: readMatrixBaseConfigField(matrix, "deviceName", fieldReadOptions),
     },
@@ -570,13 +628,7 @@ export async function resolveMatrixAuth(params?: {
       accountId,
       field: "accessToken",
     })) ?? resolved.accessToken;
-  const password =
-    (await resolveConfiguredMatrixAuthSecretInput({
-      cfg,
-      env,
-      accountId,
-      field: "password",
-    })) ?? resolved.password;
+  const tokenAuthPassword = resolved.password;
   const homeserver = await resolveValidatedMatrixHomeserverUrl(resolved.homeserver, {
     allowPrivateNetwork: resolved.allowPrivateNetwork,
   });
@@ -653,7 +705,7 @@ export async function resolveMatrixAuth(params?: {
       homeserver,
       userId,
       accessToken,
-      password,
+      password: tokenAuthPassword,
       deviceId: knownDeviceId,
       deviceName: resolved.deviceName,
       initialSyncLimit: resolved.initialSyncLimit,
@@ -670,7 +722,7 @@ export async function resolveMatrixAuth(params?: {
       homeserver: cachedCredentials.homeserver,
       userId: cachedCredentials.userId,
       accessToken: cachedCredentials.accessToken,
-      password,
+      password: tokenAuthPassword,
       deviceId: cachedCredentials.deviceId || resolved.deviceId,
       deviceName: resolved.deviceName,
       initialSyncLimit: resolved.initialSyncLimit,
@@ -683,6 +735,13 @@ export async function resolveMatrixAuth(params?: {
     throw new Error("Matrix userId is required when no access token is configured (matrix.userId)");
   }
 
+  const password =
+    (await resolveConfiguredMatrixAuthSecretInput({
+      cfg,
+      env,
+      accountId,
+      field: "password",
+    })) ?? resolved.password;
   if (!password) {
     throw new Error(
       "Matrix password is required when no access token is configured (matrix.password)",
