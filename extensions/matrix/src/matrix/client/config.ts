@@ -1,4 +1,7 @@
-import { coerceSecretRef } from "openclaw/plugin-sdk/config-runtime";
+import {
+  coerceSecretRef,
+  resolveConfiguredSecretInputString,
+} from "openclaw/plugin-sdk/config-runtime";
 import {
   requiresExplicitMatrixDefaultAccount,
   resolveMatrixDefaultOrOnlyAccountId,
@@ -74,12 +77,17 @@ function clean(
     allowEnvSecretRefFallback?: boolean;
   },
 ): string {
+  const ref = coerceSecretRef(value, opts?.config?.secrets?.defaults);
   const normalizedValue = opts?.allowEnvSecretRefFallback
-    ? (readEnvSecretRefFallback({
-        value,
-        env: opts.env,
-        config: opts.config,
-      }) ?? value)
+    ? ref?.source === "env"
+      ? (readEnvSecretRefFallback({
+          value,
+          env: opts.env,
+          config: opts.config,
+        }) ?? value)
+      : ref
+        ? ""
+        : value
     : value;
   return (
     normalizeResolvedSecretInputString({
@@ -113,6 +121,95 @@ function resolveMatrixBaseConfigFieldPath(field: MatrixConfigStringField): strin
 
 function shouldAllowEnvSecretRefFallback(field: MatrixConfigStringField): boolean {
   return field === "accessToken" || field === "password";
+}
+
+type MatrixAuthSecretField = "accessToken" | "password";
+
+type MatrixConfiguredAuthInput = {
+  value: unknown;
+  path: string;
+};
+
+function resolveConfiguredMatrixAuthInput(params: {
+  cfg: CoreConfig;
+  env: NodeJS.ProcessEnv;
+  accountId: string;
+  field: MatrixAuthSecretField;
+}): MatrixConfiguredAuthInput | undefined {
+  const normalizedAccountId = normalizeAccountId(params.accountId);
+  const account = findMatrixAccountConfig(params.cfg, normalizedAccountId) ?? {};
+  const accountValue = account[params.field];
+  if (accountValue !== undefined) {
+    return {
+      value: accountValue,
+      path: resolveMatrixConfigFieldPath(params.cfg, normalizedAccountId, params.field),
+    };
+  }
+
+  const scopedKeys = getMatrixScopedEnvVarNames(normalizedAccountId);
+  const scopedEnv = resolveScopedMatrixEnvConfig(normalizedAccountId, params.env);
+  const scopedValue = scopedEnv[params.field];
+  if (scopedValue !== undefined) {
+    return {
+      value: scopedValue,
+      path: params.field === "accessToken" ? scopedKeys.accessToken : scopedKeys.password,
+    };
+  }
+
+  if (normalizedAccountId !== DEFAULT_ACCOUNT_ID) {
+    return undefined;
+  }
+
+  const matrix = resolveMatrixBaseConfig(params.cfg);
+  const baseValue = matrix[params.field];
+  if (baseValue !== undefined) {
+    return {
+      value: baseValue,
+      path: resolveMatrixBaseConfigFieldPath(params.field),
+    };
+  }
+
+  const globalValue =
+    params.field === "accessToken" ? params.env.MATRIX_ACCESS_TOKEN : params.env.MATRIX_PASSWORD;
+  if (globalValue !== undefined) {
+    return {
+      value: globalValue,
+      path: params.field === "accessToken" ? "MATRIX_ACCESS_TOKEN" : "MATRIX_PASSWORD",
+    };
+  }
+
+  return undefined;
+}
+
+async function resolveConfiguredMatrixAuthSecretInput(params: {
+  cfg: CoreConfig;
+  env: NodeJS.ProcessEnv;
+  accountId: string;
+  field: MatrixAuthSecretField;
+}): Promise<string | undefined> {
+  const configured = resolveConfiguredMatrixAuthInput(params);
+  if (!configured) {
+    return undefined;
+  }
+
+  const resolved = await resolveConfiguredSecretInputString({
+    config: params.cfg,
+    env: params.env,
+    value: configured.value,
+    path: configured.path,
+    unresolvedReasonStyle: "detailed",
+  });
+  if (resolved.value !== undefined) {
+    return resolved.value;
+  }
+
+  if (coerceSecretRef(configured.value, params.cfg.secrets?.defaults)) {
+    throw new Error(
+      resolved.unresolvedRefReason ?? `${configured.path} SecretRef could not be resolved.`,
+    );
+  }
+
+  return undefined;
 }
 
 function readMatrixBaseConfigField(
@@ -466,6 +563,20 @@ export async function resolveMatrixAuth(params?: {
   accountId?: string | null;
 }): Promise<MatrixAuth> {
   const { cfg, env, accountId, resolved } = resolveMatrixAuthContext(params);
+  const accessToken =
+    (await resolveConfiguredMatrixAuthSecretInput({
+      cfg,
+      env,
+      accountId,
+      field: "accessToken",
+    })) ?? resolved.accessToken;
+  const password =
+    (await resolveConfiguredMatrixAuthSecretInput({
+      cfg,
+      env,
+      accountId,
+      field: "password",
+    })) ?? resolved.password;
   const homeserver = await resolveValidatedMatrixHomeserverUrl(resolved.homeserver, {
     allowPrivateNetwork: resolved.allowPrivateNetwork,
   });
@@ -481,15 +592,15 @@ export async function resolveMatrixAuth(params?: {
     credentialsMatchConfig(cached, {
       homeserver,
       userId: resolved.userId || "",
-      accessToken: resolved.accessToken,
+      accessToken,
     })
       ? cached
       : null;
 
   // If we have an access token, we can fetch userId via whoami if not provided
-  if (resolved.accessToken) {
+  if (accessToken) {
     let userId = resolved.userId;
-    const hasMatchingCachedToken = cachedCredentials?.accessToken === resolved.accessToken;
+    const hasMatchingCachedToken = cachedCredentials?.accessToken === accessToken;
     let knownDeviceId = hasMatchingCachedToken
       ? cachedCredentials?.deviceId || resolved.deviceId
       : resolved.deviceId;
@@ -497,7 +608,7 @@ export async function resolveMatrixAuth(params?: {
     if (!userId || !knownDeviceId) {
       // Fetch whoami when we need to resolve userId and/or deviceId from token auth.
       ensureMatrixSdkLoggingConfigured();
-      const tempClient = new MatrixClient(homeserver, resolved.accessToken, undefined, undefined, {
+      const tempClient = new MatrixClient(homeserver, accessToken, undefined, undefined, {
         ssrfPolicy: resolved.ssrfPolicy,
       });
       const whoami = (await tempClient.doRequest("GET", "/_matrix/client/v3/account/whoami")) as {
@@ -527,7 +638,7 @@ export async function resolveMatrixAuth(params?: {
         {
           homeserver,
           userId,
-          accessToken: resolved.accessToken,
+          accessToken,
           deviceId: knownDeviceId,
         },
         env,
@@ -541,8 +652,8 @@ export async function resolveMatrixAuth(params?: {
       accountId,
       homeserver,
       userId,
-      accessToken: resolved.accessToken,
-      password: resolved.password,
+      accessToken,
+      password,
       deviceId: knownDeviceId,
       deviceName: resolved.deviceName,
       initialSyncLimit: resolved.initialSyncLimit,
@@ -559,7 +670,7 @@ export async function resolveMatrixAuth(params?: {
       homeserver: cachedCredentials.homeserver,
       userId: cachedCredentials.userId,
       accessToken: cachedCredentials.accessToken,
-      password: resolved.password,
+      password,
       deviceId: cachedCredentials.deviceId || resolved.deviceId,
       deviceName: resolved.deviceName,
       initialSyncLimit: resolved.initialSyncLimit,
@@ -572,7 +683,7 @@ export async function resolveMatrixAuth(params?: {
     throw new Error("Matrix userId is required when no access token is configured (matrix.userId)");
   }
 
-  if (!resolved.password) {
+  if (!password) {
     throw new Error(
       "Matrix password is required when no access token is configured (matrix.password)",
     );
@@ -586,7 +697,7 @@ export async function resolveMatrixAuth(params?: {
   const login = (await loginClient.doRequest("POST", "/_matrix/client/v3/login", undefined, {
     type: "m.login.password",
     identifier: { type: "m.id.user", user: resolved.userId },
-    password: resolved.password,
+    password,
     device_id: resolved.deviceId,
     initial_device_display_name: resolved.deviceName ?? "OpenClaw Gateway",
   })) as {
@@ -595,8 +706,8 @@ export async function resolveMatrixAuth(params?: {
     device_id?: string;
   };
 
-  const accessToken = login.access_token?.trim();
-  if (!accessToken) {
+  const loginAccessToken = login.access_token?.trim();
+  if (!loginAccessToken) {
     throw new Error("Matrix login did not return an access token");
   }
 
@@ -604,8 +715,8 @@ export async function resolveMatrixAuth(params?: {
     accountId,
     homeserver,
     userId: login.user_id ?? resolved.userId,
-    accessToken,
-    password: resolved.password,
+    accessToken: loginAccessToken,
+    password,
     deviceId: login.device_id ?? resolved.deviceId,
     deviceName: resolved.deviceName,
     initialSyncLimit: resolved.initialSyncLimit,

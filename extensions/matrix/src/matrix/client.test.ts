@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LookupFn } from "../../runtime-api.js";
 import type { CoreConfig } from "../types.js";
@@ -205,6 +208,27 @@ describe("resolveMatrixConfig", () => {
         MATRIX_ACCESS_TOKEN: "env-token",
       } as NodeJS.ProcessEnv),
     ).toThrow(/not allowlisted in secrets\.providers\.matrix-env\.allowlist/i);
+  });
+
+  it("does not throw when accessToken uses a non-env SecretRef", () => {
+    const cfg = {
+      channels: {
+        matrix: {
+          homeserver: "https://cfg.example.org",
+          accessToken: { source: "file", provider: "matrix-file", id: "value" },
+        },
+      },
+      secrets: {
+        providers: {
+          "matrix-file": {
+            source: "file",
+            path: "/tmp/matrix-token",
+          },
+        },
+      },
+    } as CoreConfig;
+
+    expect(resolveMatrixConfig(cfg, {} as NodeJS.ProcessEnv).accessToken).toBeUndefined();
   });
 
   it("uses account-scoped env vars for non-default accounts before global env", () => {
@@ -787,6 +811,54 @@ describe("resolveMatrixAuth", () => {
       deviceId: "DEVICE123",
       encryption: true,
     });
+  });
+
+  it("resolves file-backed accessToken SecretRefs during Matrix auth", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-secret-ref-"));
+    const secretPath = path.join(tempDir, "token.txt");
+    await fs.writeFile(secretPath, "file-token\n", "utf8");
+    await fs.chmod(secretPath, 0o600);
+
+    const doRequestSpy = vi.spyOn(sdkModule.MatrixClient.prototype, "doRequest").mockResolvedValue({
+      user_id: "@bot:example.org",
+      device_id: "DEVICE123",
+    });
+
+    try {
+      const cfg = {
+        channels: {
+          matrix: {
+            homeserver: "https://matrix.example.org",
+            accessToken: { source: "file", provider: "matrix-file", id: "value" },
+          },
+        },
+        secrets: {
+          providers: {
+            "matrix-file": {
+              source: "file",
+              path: secretPath,
+              mode: "singleValue",
+            },
+          },
+        },
+      } as CoreConfig;
+
+      const auth = await resolveMatrixAuth({
+        cfg,
+        env: {} as NodeJS.ProcessEnv,
+      });
+
+      expect(doRequestSpy).toHaveBeenCalledWith("GET", "/_matrix/client/v3/account/whoami");
+      expect(auth).toMatchObject({
+        accountId: "default",
+        homeserver: "https://matrix.example.org",
+        userId: "@bot:example.org",
+        accessToken: "file-token",
+        deviceId: "DEVICE123",
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("uses config deviceId with cached credentials when token is loaded from cache", async () => {
