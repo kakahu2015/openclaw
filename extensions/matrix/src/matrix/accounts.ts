@@ -9,7 +9,7 @@ import {
   normalizeAccountId,
 } from "../runtime-api.js";
 import type { CoreConfig, MatrixConfig } from "../types.js";
-import { resolveMatrixBaseConfig } from "./account-config.js";
+import { findMatrixAccountConfig, resolveMatrixBaseConfig } from "./account-config.js";
 import { resolveMatrixConfigForAccount } from "./client.js";
 import { credentialsMatchConfig, loadMatrixCredentials } from "./credentials-read.js";
 
@@ -98,6 +98,10 @@ export function resolveMatrixAccount(params: {
   const env = params.env ?? process.env;
   const accountId = normalizeAccountId(params.accountId);
   const matrixBase = resolveMatrixBaseConfig(params.cfg);
+  const explicitAccountConfig =
+    accountId === DEFAULT_ACCOUNT_ID
+      ? matrixBase
+      : (findMatrixAccountConfig(params.cfg, accountId) ?? {});
   const base = resolveMatrixAccountConfig({ cfg: params.cfg, accountId });
   const enabled = base.enabled !== false && matrixBase.enabled !== false;
 
@@ -105,9 +109,10 @@ export function resolveMatrixAccount(params: {
   const hasHomeserver = Boolean(resolved.homeserver);
   const hasUserId = Boolean(resolved.userId);
   const hasAccessToken =
-    Boolean(resolved.accessToken) || hasConfiguredSecretInput(base.accessToken);
+    Boolean(resolved.accessToken) || hasConfiguredSecretInput(explicitAccountConfig.accessToken);
   const hasPassword = Boolean(resolved.password);
-  const hasPasswordAuth = hasUserId && (hasPassword || hasConfiguredSecretInput(base.password));
+  const hasPasswordAuth =
+    hasUserId && (hasPassword || hasConfiguredSecretInput(explicitAccountConfig.password));
   const stored = loadMatrixCredentials(env, accountId);
   const hasStored =
     stored && resolved.homeserver
