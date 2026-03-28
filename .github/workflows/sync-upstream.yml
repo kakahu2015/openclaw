@@ -5,7 +5,66 @@ on:
   workflow_dispatch:
 
 jobs:
+  check-release:
+    runs-on: ubuntu-latest
+    outputs:
+      should_sync: ${{ steps.check.outputs.should_sync }}
+      release_tag: ${{ steps.check.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Check latest release
+        id: check
+        run: |
+          # 获取上游最新 release 发布日期
+          RELEASE_DATE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/openclaw/openclaw/releases/latest" \
+            | jq -r '.published_at // empty')
+
+          if [ -z "$RELEASE_DATE" ]; then
+            echo "No release found, skip."
+            echo "should_sync=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # 判断是否是今天发布的（UTC）
+          RELEASE_DAY=$(echo "$RELEASE_DATE" | cut -d'T' -f1)
+          TODAY=$(date -u +%Y-%m-%d)
+
+          echo "Release date: $RELEASE_DAY, Today: $TODAY"
+
+          if [ "$RELEASE_DAY" != "$TODAY" ]; then
+            echo "No release today, skip."
+            echo "should_sync=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # 获取 release tag
+          RELEASE_TAG=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/openclaw/openclaw/releases/latest" \
+            | jq -r '.tag_name // empty')
+          echo "Release tag: $RELEASE_TAG"
+
+          # 检查是否已经同步过这个版本
+          LAST_SYNCED=""
+          if [ -f .last-synced-version ]; then
+            LAST_SYNCED=$(cat .last-synced-version)
+          fi
+          echo "Last synced: $LAST_SYNCED"
+
+          if [ "$LAST_SYNCED" = "$RELEASE_TAG" ]; then
+            echo "Already synced $RELEASE_TAG, skip."
+            echo "should_sync=false" >> $GITHUB_OUTPUT
+          else
+            echo "New release $RELEASE_TAG, will sync."
+            echo "should_sync=true" >> $GITHUB_OUTPUT
+            echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
+          fi
+
   sync:
+    needs: check-release
+    if: needs.check-release.outputs.should_sync == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,10 +88,12 @@ jobs:
           rm -rf .github/workflows
           cp -r /tmp/my-workflows .github/workflows
           git add .github/workflows/
-          git diff --cached --quiet || git commit -m "sync upstream (preserve local workflows)"
+          # 更新同步标记
+          echo "${{ needs.check-release.outputs.release_tag }}" > .last-synced-version
+          git add .last-synced-version
+          git diff --cached --quiet || git commit -m "sync upstream ${{ needs.check-release.outputs.release_tag }} (preserve local workflows)"
           git push origin main
       - name: Trigger iOS Build
-        if: success()
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
