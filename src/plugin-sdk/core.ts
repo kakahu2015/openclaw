@@ -1,4 +1,5 @@
 import { getChatChannelMeta } from "../channels/chat-meta.js";
+import { buildAccountScopedDmSecurityPolicy } from "../channels/plugins/helpers.js";
 import {
   createScopedAccountReplyToModeResolver,
   createTopLevelChannelReplyToModeResolver,
@@ -22,7 +23,6 @@ import type { OutboundDeliveryResult } from "../infra/outbound/deliver.js";
 import { emptyPluginConfigSchema } from "../plugins/config-schema.js";
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 import type { OpenClawPluginApi, OpenClawPluginConfigSchema } from "../plugins/types.js";
-import { createScopedDmSecurityResolver } from "./channel-config-helpers.js";
 
 export type {
   AnyAgentTool,
@@ -139,6 +139,7 @@ export type { SecretFileReadOptions, SecretFileReadResult } from "../infra/secre
 export { resolveGatewayBindUrl } from "../shared/gateway-bind-url.js";
 export type { GatewayBindUrlResult } from "../shared/gateway-bind-url.js";
 export { resolveGatewayPort } from "../config/paths.js";
+export { createSubsystemLogger } from "../logging/subsystem.js";
 export { normalizeAtHashSlug, normalizeHyphenSlug } from "../shared/string-normalization.js";
 
 export { resolveTailnetHostWithRunner } from "../shared/tailscale-status.js";
@@ -428,7 +429,21 @@ function resolveChatChannelSecurity<TResolvedAccount extends { accountId?: strin
     return security;
   }
   return {
-    resolveDmPolicy: createScopedDmSecurityResolver<TResolvedAccount>(security.dm),
+    resolveDmPolicy: ({ cfg, accountId, account }) =>
+      buildAccountScopedDmSecurityPolicy({
+        cfg,
+        channelKey: security.dm.channelKey,
+        accountId,
+        fallbackAccountId: security.dm.resolveFallbackAccountId?.(account) ?? account.accountId,
+        policy: security.dm.resolvePolicy(account),
+        allowFrom: security.dm.resolveAllowFrom(account) ?? [],
+        defaultPolicy: security.dm.defaultPolicy,
+        allowFromPathSuffix: security.dm.allowFromPathSuffix,
+        policyPathSuffix: security.dm.policyPathSuffix,
+        approveChannelId: security.dm.approveChannelId,
+        approveHint: security.dm.approveHint,
+        normalizeEntry: security.dm.normalizeEntry,
+      }),
     ...(security.collectWarnings ? { collectWarnings: security.collectWarnings } : {}),
   };
 }
