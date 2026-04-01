@@ -131,7 +131,7 @@ export function resolveApiKeyFromCredential(
         source: "non-env-ref",
       };
     }
-    if (cred.key?.trim()) {
+    if (typeof cred.key === "string" && cred.key.trim()) {
       return {
         apiKey: cred.key,
         source: "plaintext",
@@ -156,7 +156,7 @@ export function resolveApiKeyFromCredential(
         source: "non-env-ref",
       };
     }
-    if (cred.token?.trim()) {
+    if (typeof cred.token === "string" && cred.token.trim()) {
       return {
         apiKey: cred.token,
         source: "plaintext",

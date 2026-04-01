@@ -37,7 +37,7 @@ function resolveApiKeyFromCredential(
       ? keyRef.id.trim()
       : resolveNonEnvSecretRefApiKeyMarker(keyRef.source);
   }
-  return cred.key?.trim() || undefined;
+  return typeof cred.key === "string" ? cred.key.trim() : undefined;
 }
 
 function resolveMetadataFromCredential(
