@@ -28,9 +28,9 @@ jobs:
             exit 0
           fi
 
-          # 判断是否是今天发布的（UTC）
-          RELEASE_DAY=$(echo "$RELEASE_DATE" | cut -d'T' -f1)
-          TODAY=$(date -u +%Y-%m-%d)
+          # 判断是否是今天发布的（新加坡时间 GMT+8）
+          RELEASE_DAY=$(TZ=Asia/Singapore date -d "$RELEASE_DATE" +%Y-%m-%d)
+          TODAY=$(TZ=Asia/Singapore date +%Y-%m-%d)
 
           echo "Release date: $RELEASE_DAY, Today: $TODAY"
 
