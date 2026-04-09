@@ -467,24 +467,10 @@ public final class OpenClawChatViewModel {
         return "\(message.role)|\(timestamp)|\(text)"
     }
 
-    private static let resetTriggers: Set<String> = ["/new", "/reset", "/clear"]
-    private static let compactTriggers: Set<String> = ["/compact"]
-
     private func performSend() async {
         guard !self.isSending else { return }
         let trimmed = self.input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !self.attachments.isEmpty else { return }
-
-        if Self.resetTriggers.contains(trimmed.lowercased()) {
-            self.input = ""
-            await self.performReset()
-            return
-        }
-        if Self.compactTriggers.contains(trimmed.lowercased()) {
-            self.input = ""
-            await self.performCompact()
-            return
-        }
 
         let sessionKey = self.sessionKey
 
@@ -613,58 +599,6 @@ public final class OpenClawChatViewModel {
         guard next != self.sessionKey else { return }
         self.sessionKey = next
         self.modelSelectionID = Self.defaultModelSelectionID
-        await self.bootstrap()
-    }
-
-    private func performReset() async {
-        self.isLoading = true
-        self.errorText = nil
-        defer { self.isLoading = false }
-
-        do {
-            try await self.transport.resetSession(sessionKey: self.sessionKey)
-        } catch {
-            self.errorText = error.localizedDescription
-            chatUILogger.error("session reset failed \(error.localizedDescription, privacy: .public)")
-            return
-        }
-
-        await self.bootstrap()
-    }
-
-    private func performCompact() async {
-        guard !self.isCompacting else { return }
-        guard !self.isSending, self.pendingRuns.isEmpty, !self.isAborting else {
-            self.errorText = "Wait for the current response before compacting the session."
-            return
-        }
-        if let lastCompactAt,
-           Date().timeIntervalSince(lastCompactAt) < self.compactCooldown
-        {
-            self.errorText = "Please wait before compacting this session again."
-            return
-        }
-
-        self.isCompacting = true
-        self.isLoading = true
-        self.errorText = nil
-        defer {
-            self.isLoading = false
-            self.isCompacting = false
-        }
-
-        do {
-            try await self.transport.compactSession(sessionKey: self.sessionKey)
-        } catch {
-            self.errorText = "Unable to compact the session. Please try again."
-            let nsError = error as NSError
-            chatUILogger.error(
-                "session compact failed domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) details=\(String(describing: error), privacy: .private)"
-            )
-            return
-        }
-
-        self.lastCompactAt = Date()
         await self.bootstrap()
     }
 

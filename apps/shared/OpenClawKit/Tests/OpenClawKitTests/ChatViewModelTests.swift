@@ -240,6 +240,7 @@ private actor TestChatTransportState {
     var modelsCallCount: Int = 0
     var resetSessionKeys: [String] = []
     var compactSessionKeys: [String] = []
+    var sentMessages: [String] = []
     var sentRunIds: [String] = []
     var sentThinkingLevels: [String] = []
     var abortedRunIds: [String] = []
@@ -304,11 +305,12 @@ private final class TestChatTransport: @unchecked Sendable, OpenClawChatTranspor
 
     func sendMessage(
         sessionKey _: String,
-        message _: String,
+        message: String,
         thinking: String,
         idempotencyKey: String,
         attachments _: [OpenClawChatAttachmentPayload]) async throws -> OpenClawChatSendResponse
     {
+        await self.state.sentMessagesAppend(message)
         await self.state.sentRunIdsAppend(idempotencyKey)
         await self.state.sentThinkingLevelsAppend(thinking)
         return OpenClawChatSendResponse(runId: idempotencyKey, status: "ok")
@@ -382,6 +384,10 @@ private final class TestChatTransport: @unchecked Sendable, OpenClawChatTranspor
         return ids.last
     }
 
+    func sentMessages() async -> [String] {
+        await self.state.sentMessages
+    }
+
     func abortedRunIds() async -> [String] {
         await self.state.abortedRunIds
     }
@@ -422,6 +428,10 @@ extension TestChatTransportState {
 
     fileprivate func sentRunIdsAppend(_ v: String) {
         self.sentRunIds.append(v)
+    }
+
+    fileprivate func sentMessagesAppend(_ v: String) {
+        self.sentMessages.append(v)
     }
 
     fileprivate func abortedRunIdsAppend(_ v: String) {
@@ -919,168 +929,47 @@ extension TestChatTransportState {
         #expect(keys == ["agent:main:main"])
     }
 
-    @Test func resetTriggerResetsSessionAndReloadsHistory() async throws {
-        let before = historyPayload(
-            messages: [
-                chatTextMessage(role: "assistant", text: "before reset", timestamp: 1),
-            ])
-        let after = historyPayload(
-            messages: [
-                chatTextMessage(role: "assistant", text: "after reset", timestamp: 2),
-            ])
-
-        let (transport, vm) = await makeViewModel(historyResponses: [before, after])
+    @Test func slashNewIsForwardedToGateway() async throws {
+        let history = historyPayload()
+        let (transport, vm) = await makeViewModel(historyResponses: [history])
         try await loadAndWaitBootstrap(vm: vm)
-        try await waitUntil("initial history loaded") {
-            await MainActor.run { vm.messages.first?.content.first?.text == "before reset" }
-        }
 
         await MainActor.run {
             vm.input = "/new"
             vm.send()
         }
 
-        try await waitUntil("reset called") {
-            await transport.resetSessionKeys() == ["main"]
+        try await waitUntil("slash new forwarded") {
+            await transport.sentMessages() == ["/new"]
         }
-        try await waitUntil("history reloaded") {
-            await MainActor.run { vm.messages.first?.content.first?.text == "after reset" }
-        }
-        #expect(await transport.lastSentRunId() == nil)
+        #expect(await transport.resetSessionKeys().isEmpty)
+        #expect(await transport.compactSessionKeys().isEmpty)
+        #expect(await MainActor.run { vm.sessionKey } == "main")
     }
 
-    @Test func compactTriggerCompactsSessionAndReloadsHistory() async throws {
-        let before = historyPayload(
-            messages: [
-                chatTextMessage(role: "assistant", text: "before compact", timestamp: 1),
-            ])
-        let after = historyPayload(
-            messages: [
-                chatTextMessage(role: "assistant", text: "after compact", timestamp: 2),
-            ])
-
-        let (transport, vm) = await makeViewModel(historyResponses: [before, after])
-        try await loadAndWaitBootstrap(vm: vm)
-        try await waitUntil("initial history loaded") {
-            await MainActor.run { vm.messages.first?.content.first?.text == "before compact" }
-        }
-
-        await MainActor.run {
-            vm.input = "/compact"
-            vm.send()
-        }
-
-        try await waitUntil("compact called") {
-            await transport.compactSessionKeys() == ["main"]
-        }
-        try await waitUntil("history reloaded") {
-            await MainActor.run { vm.messages.first?.content.first?.text == "after compact" }
-        }
-        #expect(await transport.lastSentRunId() == nil)
-    }
-
-    @Test func compactTriggerShowsGenericErrorMessageOnFailure() async throws {
+    @Test func slashResetAndCompactAreForwardedToGateway() async throws {
         let history = historyPayload()
-        let (transport, vm) = await makeViewModel(
-            historyResponses: [history],
-            compactSessionHook: { _ in
-                throw NSError(
-                    domain: "TestCompact",
-                    code: 42,
-                    userInfo: [NSLocalizedDescriptionKey: "backend details should not leak"])
-            })
+        let (transport, vm) = await makeViewModel(historyResponses: [history])
         try await loadAndWaitBootstrap(vm: vm)
 
         await MainActor.run {
-            vm.input = "/compact"
+            vm.input = "/reset"
             vm.send()
         }
-
-        try await waitUntil("compact attempted") {
-            await transport.compactSessionKeys() == ["main"]
-        }
-        #expect(await MainActor.run { vm.errorText } == "Unable to compact the session. Please try again.")
-    }
-
-    @Test func compactTriggerIgnoresConcurrentAndImmediateRepeatRequests() async throws {
-        let before = historyPayload(
-            messages: [
-                chatTextMessage(role: "assistant", text: "before compact", timestamp: 1),
-            ])
-        let after = historyPayload(
-            messages: [
-                chatTextMessage(role: "assistant", text: "after compact", timestamp: 2),
-            ])
-        let gate = AsyncGate()
-        let (transport, vm) = await makeViewModel(
-            historyResponses: [before, after],
-            compactSessionHook: { _ in
-                await gate.wait()
-            })
-        try await loadAndWaitBootstrap(vm: vm)
-
-        await MainActor.run {
-            vm.input = "/compact"
-            vm.send()
-            vm.input = "/compact"
-            vm.send()
-        }
-
-        try await waitUntil("single compact request issued") {
-            await transport.compactSessionKeys() == ["main"]
-        }
-        #expect(await MainActor.run { vm.errorText } == nil)
-
-        await gate.open()
-        try await waitUntil("history reloaded after compact") {
-            await MainActor.run { vm.messages.first?.content.first?.text == "after compact" }
+        try await waitUntil("slash reset forwarded") {
+            await transport.sentMessages() == ["/reset"]
         }
 
         await MainActor.run {
             vm.input = "/compact"
             vm.send()
         }
-
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(await transport.compactSessionKeys() == ["main"])
-        #expect(await MainActor.run { vm.errorText } == "Please wait before compacting this session again.")
-    }
-
-    @Test func compactTriggerAllowsImmediateRetryAfterFailure() async throws {
-        let history = historyPayload()
-        let attemptCount = AsyncCounter()
-        let (transport, vm) = await makeViewModel(
-            historyResponses: [history],
-            compactSessionHook: { _ in
-                let next = await attemptCount.increment()
-                if next == 1 {
-                    throw NSError(
-                        domain: "TestCompact",
-                        code: 42,
-                        userInfo: [NSLocalizedDescriptionKey: "temporary failure"])
-                }
-            })
-        try await loadAndWaitBootstrap(vm: vm)
-
-        await MainActor.run {
-            vm.input = "/compact"
-            vm.send()
+        try await waitUntil("slash compact forwarded") {
+            await transport.sentMessages() == ["/reset", "/compact"]
         }
 
-        try await waitUntil("first compact attempted") {
-            await transport.compactSessionKeys() == ["main"]
-        }
-        #expect(await MainActor.run { vm.errorText } == "Unable to compact the session. Please try again.")
-
-        await MainActor.run {
-            vm.input = "/compact"
-            vm.send()
-        }
-
-        try await waitUntil("second compact attempted") {
-            await transport.compactSessionKeys() == ["main", "main"]
-        }
-        #expect(await MainActor.run { vm.errorText } == nil)
+        #expect(await transport.resetSessionKeys().isEmpty)
+        #expect(await transport.compactSessionKeys().isEmpty)
     }
 
     @Test func bootstrapsModelSelectionFromSessionAndDefaults() async throws {
