@@ -10,6 +10,53 @@ import UniformTypeIdentifiers
 @MainActor
 struct OpenClawChatComposer: View {
     private static let menuThinkingLevels = ["off", "low", "medium", "high"]
+    private static let slashCommandPresets: [SlashCommandPreset] = [
+        .init(name: "help", description: "Show available commands"),
+        .init(name: "commands", description: "List all slash commands"),
+        .init(name: "tools", description: "List available runtime tools"),
+        .init(name: "skill", description: "Run a skill by name"),
+        .init(name: "status", description: "Show current status"),
+        .init(name: "tasks", description: "List background tasks for this session"),
+        .init(name: "allowlist", description: "List, add, or remove allowlist entries"),
+        .init(name: "approve", description: "Approve or deny exec requests"),
+        .init(name: "context", description: "Explain how context is built and used"),
+        .init(name: "btw", description: "Ask a side question without changing session context"),
+        .init(name: "export-session", description: "Export the current session to HTML", aliases: ["export", "es"]),
+        .init(name: "tts", description: "Control text-to-speech settings"),
+        .init(name: "whoami", description: "Show your sender id", aliases: ["id"]),
+        .init(name: "session", description: "Manage session-level settings"),
+        .init(name: "subagents", description: "List, spawn, steer, or kill subagents"),
+        .init(name: "acp", description: "Manage ACP sessions and runtime options"),
+        .init(name: "focus", description: "Bind this conversation to a session target"),
+        .init(name: "unfocus", description: "Remove the current conversation binding"),
+        .init(name: "agents", description: "List thread-bound agents for this session"),
+        .init(name: "kill", description: "Kill a running subagent"),
+        .init(name: "steer", description: "Send guidance to a running subagent", aliases: ["tell"]),
+        .init(name: "config", description: "Show or set config values"),
+        .init(name: "mcp", description: "Show or set MCP servers"),
+        .init(name: "plugins", description: "List, show, enable, or disable plugins", aliases: ["plugin"]),
+        .init(name: "debug", description: "Set runtime debug overrides"),
+        .init(name: "usage", description: "Show usage footer or cost summary"),
+        .init(name: "stop", description: "Stop the current run"),
+        .init(name: "restart", description: "Restart OpenClaw"),
+        .init(name: "activation", description: "Set group activation mode"),
+        .init(name: "send", description: "Set send policy"),
+        .init(name: "new", description: "Start a fresh session"),
+        .init(name: "reset", description: "Reset the current session"),
+        .init(name: "compact", description: "Compact session context"),
+        .init(name: "think", description: "Set thinking level", aliases: ["thinking", "t"]),
+        .init(name: "verbose", description: "Toggle verbose mode", aliases: ["v"]),
+        .init(name: "fast", description: "Toggle fast mode"),
+        .init(name: "reasoning", description: "Toggle reasoning visibility", aliases: ["reason"]),
+        .init(name: "elevated", description: "Toggle elevated mode", aliases: ["elev"]),
+        .init(name: "exec", description: "Set exec defaults for this session"),
+        .init(name: "model", description: "Change or inspect the model"),
+        .init(name: "models", description: "List model providers or provider models"),
+        .init(name: "queue", description: "Adjust queue settings"),
+        .init(name: "bash", description: "Run host shell commands"),
+        .init(name: "clear", description: "Clear chat history"),
+        .init(name: "redirect", description: "Abort and restart with a new message"),
+    ]
 
     @Bindable var viewModel: OpenClawChatViewModel
     let style: OpenClawChatView.Style
@@ -213,6 +260,10 @@ struct OpenClawChatComposer: View {
         VStack(alignment: .leading, spacing: 8) {
             self.editorOverlay
 
+            if !self.slashSuggestions.isEmpty {
+                self.slashSuggestionsView
+            }
+
             if !self.isComposerCompacted {
                 Rectangle()
                     .fill(OpenClawChatTheme.divider)
@@ -297,6 +348,36 @@ struct OpenClawChatComposer: View {
                 .focused(self.$isFocused)
             #endif
         }
+    }
+
+    private var slashSuggestionsView: some View {
+        ScrollView(showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(self.slashSuggestions) { command in
+                    Button {
+                        self.applySlashSuggestion(command)
+                    } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text("/\(command.name)")
+                                .font(.system(.subheadline, design: .monospaced).weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .frame(width: 128, alignment: .leading)
+                            Text(command.description)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(OpenClawChatTheme.subtleCard)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .frame(maxHeight: 220)
+        .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
     private var sendButton: some View {
@@ -384,6 +465,67 @@ struct OpenClawChatComposer: View {
         #endif
     }
 
+    private var slashSuggestions: [SlashCommandPreset] {
+        guard let query = self.activeSlashQuery else { return [] }
+        if query.isEmpty {
+            return Self.slashCommandPresets
+        }
+        return Self.slashCommandPresets
+            .compactMap { command in
+                self.matchScore(for: command, query: query).map { (command, $0) }
+            }
+            .sorted {
+                if $0.1 != $1.1 {
+                    return $0.1 < $1.1
+                }
+                return $0.0.name < $1.0.name
+            }
+            .map(\.0)
+    }
+
+    private var activeSlashQuery: String? {
+        let trimmed = self.viewModel.input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("/") else { return nil }
+        let commandBody = String(trimmed.dropFirst())
+        guard !commandBody.contains(where: \.isWhitespace) else { return nil }
+        return commandBody.lowercased()
+    }
+
+    private func applySlashSuggestion(_ command: SlashCommandPreset) {
+        self.viewModel.input = "/\(command.name) "
+    }
+
+    private func matchScore(for command: SlashCommandPreset, query: String) -> Int? {
+        if command.name.hasPrefix(query) {
+            return 0
+        }
+        if command.aliases.contains(where: { $0.hasPrefix(query) }) {
+            return 1
+        }
+        if Self.isSubsequence(query, of: command.name) {
+            return 2
+        }
+        if command.aliases.contains(where: { Self.isSubsequence(query, of: $0) }) {
+            return 3
+        }
+        if command.description.localizedCaseInsensitiveContains(query) {
+            return 4
+        }
+        return nil
+    }
+
+    private static func isSubsequence(_ needle: String, of haystack: String) -> Bool {
+        guard !needle.isEmpty else { return true }
+        var currentIndex = haystack.startIndex
+        for char in needle {
+            guard let matchIndex = haystack[currentIndex...].firstIndex(of: char) else {
+                return false
+            }
+            currentIndex = haystack.index(after: matchIndex)
+        }
+        return true
+    }
+
     #if os(macOS)
     private func pickFilesMac() {
         let panel = NSOpenPanel()
@@ -429,6 +571,14 @@ struct OpenClawChatComposer: View {
         self.pickerItems = []
     }
     #endif
+}
+
+private struct SlashCommandPreset: Identifiable {
+    let name: String
+    let description: String
+    var aliases: [String] = []
+
+    var id: String { self.name }
 }
 
 #if os(macOS)

@@ -144,6 +144,7 @@ struct ChatMessageBubble: View {
     let markdownVariant: ChatMarkdownVariant
     let userAccent: Color?
     let showsAssistantTrace: Bool
+    let requestToolResultDetail: @MainActor @Sendable (String) async -> String?
 
     var body: some View {
         ChatMessageBody(
@@ -152,7 +153,8 @@ struct ChatMessageBubble: View {
             style: self.style,
             markdownVariant: self.markdownVariant,
             userAccent: self.userAccent,
-            showsAssistantTrace: self.showsAssistantTrace)
+            showsAssistantTrace: self.showsAssistantTrace,
+            requestToolResultDetail: self.requestToolResultDetail)
             .frame(maxWidth: ChatUIConstants.bubbleMaxWidth, alignment: self.isUser ? .trailing : .leading)
             .frame(maxWidth: .infinity, alignment: self.isUser ? .trailing : .leading)
             .padding(.horizontal, 2)
@@ -169,20 +171,21 @@ private struct ChatMessageBody: View {
     let markdownVariant: ChatMarkdownVariant
     let userAccent: Color?
     let showsAssistantTrace: Bool
+    let requestToolResultDetail: @MainActor @Sendable (String) async -> String?
 
     var body: some View {
         let text = self.primaryText
         let textColor = self.isUser ? OpenClawChatTheme.userText : OpenClawChatTheme.assistantText
 
         VStack(alignment: .leading, spacing: 10) {
-            if self.isToolResultMessage, self.showsAssistantTrace {
-                if !text.isEmpty {
-                    ToolResultCard(
-                        title: self.toolResultTitle,
-                        text: text,
-                        isUser: self.isUser,
-                        toolName: self.message.toolName)
-                }
+            if self.isToolResultMessage {
+                ToolResultDisclosureCard(
+                    title: self.toolResultTitle,
+                    toolCallId: self.message.toolCallId,
+                    toolName: self.message.toolName,
+                    requestDetail: self.requestToolResultDetail)
+            } else if self.isSlashCommandMessage {
+                SlashCommandEchoCard(text: text)
             } else if self.isUser {
                 ChatMarkdownRenderer(
                     text: text,
@@ -203,27 +206,18 @@ private struct ChatMessageBody: View {
                 }
             }
 
-            if self.showsAssistantTrace, !self.toolCalls.isEmpty {
-                ForEach(self.toolCalls.indices, id: \.self) { idx in
-                    ToolCallCard(
-                        content: self.toolCalls[idx],
-                        isUser: self.isUser)
-                }
-            }
-
-            if self.showsAssistantTrace, !self.inlineToolResults.isEmpty {
+            if !self.inlineToolResults.isEmpty {
                 ForEach(self.inlineToolResults.indices, id: \.self) { idx in
                     let toolResult = self.inlineToolResults[idx]
                     let display = ToolDisplayRegistry.resolve(name: toolResult.name ?? "tool", args: nil)
-                    ToolResultCard(
+                    ToolResultDisclosureCard(
                         title: "\(display.emoji) \(display.title)",
-                        text: toolResult.text ?? "",
-                        isUser: self.isUser,
-                        toolName: toolResult.name)
+                        toolCallId: toolResult.id,
+                        toolName: toolResult.name,
+                        requestDetail: self.requestToolResultDetail)
                 }
             }
         }
-        .textSelection(.enabled)
         .padding(.vertical, 10)
         .padding(.horizontal, 12)
         .foregroundStyle(textColor)
@@ -275,6 +269,15 @@ private struct ChatMessageBody: View {
     private var isToolResultMessage: Bool {
         let role = self.message.role.lowercased()
         return role == "toolresult" || role == "tool_result"
+    }
+
+    private var isSlashCommandMessage: Bool {
+        guard self.isUser else { return false }
+        guard self.inlineAttachments.isEmpty else { return false }
+        let trimmed = self.primaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("/") else { return false }
+        let firstToken = trimmed.split(whereSeparator: \.isWhitespace).first
+        return firstToken?.contains("/") == true
     }
 
     private var toolResultTitle: String {
@@ -350,6 +353,113 @@ private struct ChatMessageBody: View {
     }
 }
 
+private struct SlashCommandEchoCard: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "terminal")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(self.text)
+                .font(.system(.footnote, design: .monospaced).weight(.semibold))
+                .foregroundStyle(OpenClawChatTheme.userText)
+                .textSelection(.disabled)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.white.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct ToolResultDisclosureCard: View {
+    let title: String
+    let toolCallId: String?
+    let toolName: String?
+    let requestDetail: @MainActor @Sendable (String) async -> String?
+    @State private var expanded = false
+    @State private var isLoading = false
+    @State private var detailText: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                self.toggleExpanded()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "hammer.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(self.title)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Text("Tool output")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Image(systemName: self.expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+
+            if self.expanded {
+                if self.isLoading {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Loading tool output…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if let detailText, !detailText.isEmpty {
+                    Text(detailText)
+                        .font(.footnote.monospaced())
+                        .foregroundStyle(OpenClawChatTheme.assistantText)
+                        .lineLimit(12)
+                } else {
+                    Text("Tool output unavailable.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(OpenClawChatTheme.subtleCard)
+                .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)))
+    }
+
+    private func toggleExpanded() {
+        self.expanded.toggle()
+        guard self.expanded else { return }
+        guard self.detailText == nil else { return }
+        guard let toolCallId = self.toolCallId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !toolCallId.isEmpty
+        else {
+            self.detailText = "Tool output unavailable."
+            return
+        }
+
+        self.isLoading = true
+        Task {
+            let detail = await self.requestDetail(toolCallId)
+            await MainActor.run {
+                self.isLoading = false
+                let formatted = detail.map { ToolResultTextFormatter.format(text: $0, toolName: self.toolName) } ?? ""
+                self.detailText = formatted.isEmpty ? "Tool output unavailable." : formatted
+            }
+        }
+    }
+}
+
 private struct AttachmentRow: View {
     let att: OpenClawChatMessageContent
     let isUser: Bool
@@ -375,10 +485,16 @@ private struct ToolCallCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "hammer.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Text(self.toolName)
                     .font(.footnote.weight(.semibold))
                 Spacer(minLength: 0)
+                Text("Running")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
             }
 
             if let summary = self.summary, !summary.isEmpty {
@@ -407,66 +523,6 @@ private struct ToolCallCard: View {
 
     private var display: ToolDisplaySummary {
         ToolDisplayRegistry.resolve(name: self.content.name ?? "tool", args: self.content.arguments)
-    }
-}
-
-private struct ToolResultCard: View {
-    let title: String
-    let text: String
-    let isUser: Bool
-    let toolName: String?
-    @State private var expanded = false
-
-    var body: some View {
-        if !self.displayContent.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
-                    Text(self.title)
-                        .font(.footnote.weight(.semibold))
-                    Spacer(minLength: 0)
-                }
-
-                Text(self.displayText)
-                    .font(.footnote.monospaced())
-                    .foregroundStyle(self.isUser ? OpenClawChatTheme.userText : OpenClawChatTheme.assistantText)
-                    .lineLimit(self.expanded ? nil : Self.previewLineLimit)
-
-                if self.shouldShowToggle {
-                    Button(self.expanded ? "Show less" : "Show full output") {
-                        self.expanded.toggle()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-            }
-            .padding(10)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(OpenClawChatTheme.subtleCard)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)))
-        }
-    }
-
-    private static let previewLineLimit = 8
-
-    private var displayContent: String {
-        ToolResultTextFormatter.format(text: self.text, toolName: self.toolName)
-    }
-
-    private var lines: [Substring] {
-        self.displayContent.components(separatedBy: .newlines).map { Substring($0) }
-    }
-
-    private var displayText: String {
-        guard !self.expanded, self.lines.count > Self.previewLineLimit else { return self.displayContent }
-        return self.lines.prefix(Self.previewLineLimit).joined(separator: "\n") + "\n…"
-    }
-
-    private var shouldShowToggle: Bool {
-        self.lines.count > Self.previewLineLimit
     }
 }
 

@@ -43,7 +43,7 @@ private struct ChatMarkdownStyle: ViewModifier {
     let textColor: Color
 
     func body(content: Content) -> some View {
-        Group {
+        let styled = Group {
             if self.variant == .compact {
                 content.textual.structuredTextStyle(.default)
             } else {
@@ -53,7 +53,12 @@ private struct ChatMarkdownStyle: ViewModifier {
         .font(self.font)
         .foregroundStyle(self.textColor)
         .textual.inlineStyle(self.inlineStyle)
-        .textual.textSelection(.enabled)
+
+        #if os(iOS)
+        styled
+        #else
+        styled.textual.textSelection(.enabled)
+        #endif
     }
 
     private var inlineStyle: InlineStyle {

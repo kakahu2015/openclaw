@@ -48,6 +48,8 @@ public final class OpenClawChatViewModel {
 
     @ObservationIgnored
     private nonisolated(unsafe) var pendingRunTimeoutTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored
+    private nonisolated(unsafe) var pendingHistoryRetryTask: Task<Void, Never>?
     private let pendingRunTimeoutMs: UInt64 = 120_000
     private var replaceMessagesOnRunRefresh = Set<String>()
     // Session switches can overlap in-flight picker patches, so stale completions
@@ -68,6 +70,9 @@ public final class OpenClawChatViewModel {
                 .sorted { ($0.startedAt ?? 0) < ($1.startedAt ?? 0) }
         }
     }
+    private static let maxCachedToolResultDetails = 24
+    private var toolResultDetailCache: [String: String] = [:]
+    private var toolResultDetailCacheOrder: [String] = []
 
     private var lastHealthPollAt: Date?
 
@@ -98,6 +103,7 @@ public final class OpenClawChatViewModel {
 
     deinit {
         self.eventTask?.cancel()
+        self.pendingHistoryRetryTask?.cancel()
         for (_, task) in self.pendingRunTimeoutTasks {
             task.cancel()
         }
@@ -199,6 +205,27 @@ public final class OpenClawChatViewModel {
         Task { await self.loadAttachments(urls: urls) }
     }
 
+    public func requestToolResultDetail(toolCallId: String) async -> String? {
+        let trimmed = toolCallId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let cached = self.toolResultDetailCache[trimmed] {
+            return cached
+        }
+
+        do {
+            let payload = try await self.transport.requestHistory(sessionKey: self.sessionKey)
+            let messages = Self.decodeMessages(payload.messages ?? [])
+            if let detail = Self.findToolResultDetail(in: messages, toolCallId: trimmed) {
+                self.cacheToolResultDetail(detail, for: trimmed)
+                return detail
+            }
+        } catch {
+            chatUILogger.error("tool result detail request failed \(error.localizedDescription, privacy: .public)")
+        }
+
+        return nil
+    }
+
     public func addImageAttachment(data: Data, fileName: String, mimeType: String) {
         Task { await self.addImageAttachment(url: nil, data: data, fileName: fileName, mimeType: mimeType) }
     }
@@ -219,6 +246,7 @@ public final class OpenClawChatViewModel {
         self.errorText = nil
         self.healthOK = false
         self.clearPendingRuns(reason: nil)
+        self.clearToolResultDetailCache()
         self.pendingToolCallsById = [:]
         self.streamingAssistantText = nil
         self.sessionId = nil
@@ -477,6 +505,28 @@ public final class OpenClawChatViewModel {
         }
     }
 
+    private static func findToolResultDetail(in messages: [OpenClawChatMessage], toolCallId: String) -> String? {
+        for message in messages.reversed() {
+            if message.toolCallId == toolCallId {
+                let detail = message.content.compactMap(\.text).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                if !detail.isEmpty {
+                    return detail
+                }
+            }
+
+            for content in message.content.reversed() {
+                let kind = (content.type ?? "").lowercased()
+                guard kind == "toolresult" || kind == "tool_result" else { continue }
+                guard content.id == toolCallId else { continue }
+                let detail = (content.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if !detail.isEmpty {
+                    return detail
+                }
+            }
+        }
+        return nil
+    }
+
     private func performSend() async {
         guard !self.isSending else { return }
         let trimmed = self.input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -501,7 +551,6 @@ public final class OpenClawChatViewModel {
         let resetsSession = Self.isSessionResetCommand(messageText)
         if resetsSession {
             self.replaceMessagesOnRunRefresh.insert(runId)
-            self.messages = []
         }
 
         // Optimistically append user message to UI.
@@ -621,6 +670,7 @@ public final class OpenClawChatViewModel {
         guard !next.isEmpty else { return }
         guard next != self.sessionKey else { return }
         self.sessionKey = next
+        self.clearToolResultDetailCache()
         self.modelSelectionID = Self.defaultModelSelectionID
         await self.bootstrap()
     }
@@ -931,7 +981,6 @@ public final class OpenClawChatViewModel {
             // Keep multiple clients in sync: if another client finishes a run for our session, refresh history.
             switch chat.state {
             case "final", "aborted", "error":
-                self.streamingAssistantText = nil
                 self.pendingToolCallsById = [:]
                 Task { await self.refreshHistoryAfterRun() }
             default:
@@ -952,7 +1001,6 @@ public final class OpenClawChatViewModel {
                 self.clearPendingRuns(reason: nil)
             }
             self.pendingToolCallsById = [:]
-            self.streamingAssistantText = nil
             Task { await self.refreshHistoryAfterRun(replaceMessages: replaceMessages) }
         default:
             break
@@ -1008,17 +1056,58 @@ public final class OpenClawChatViewModel {
         do {
             let payload = try await self.transport.requestHistory(sessionKey: self.sessionKey)
             let incoming = Self.decodeMessages(payload.messages ?? [])
+            let previousMessages = self.messages
+            let hadStreamingAssistantText = self.streamingAssistantText != nil
+            let incomingLooksIncomplete = hadStreamingAssistantText &&
+                !replaceMessages &&
+                incoming.count < previousMessages.count
+            if incomingLooksIncomplete {
+                self.scheduleHistoryRetry()
+                return
+            }
             self.messages = replaceMessages
-                ? Self.reconcileMessageIDs(previous: self.messages, incoming: incoming)
-                : Self.reconcileRunRefreshMessages(previous: self.messages, incoming: incoming)
+                ? Self.reconcileMessageIDs(previous: previousMessages, incoming: incoming)
+                : Self.reconcileRunRefreshMessages(previous: previousMessages, incoming: incoming)
             self.sessionId = payload.sessionId
             if !self.prefersExplicitThinkingLevel,
                let level = Self.normalizedThinkingLevel(payload.thinkingLevel)
             {
                 self.thinkingLevel = level
             }
+            self.streamingAssistantText = nil
+            self.pendingHistoryRetryTask?.cancel()
+            self.pendingHistoryRetryTask = nil
         } catch {
             chatUILogger.error("refresh history failed \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func scheduleHistoryRetry() {
+        self.pendingHistoryRetryTask?.cancel()
+        self.pendingHistoryRetryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                Task { await self.refreshHistoryAfterRun() }
+            }
+        }
+    }
+
+    private func clearToolResultDetailCache() {
+        self.toolResultDetailCache.removeAll(keepingCapacity: false)
+        self.toolResultDetailCacheOrder.removeAll(keepingCapacity: false)
+    }
+
+    private func cacheToolResultDetail(_ detail: String, for toolCallId: String) {
+        if self.toolResultDetailCache[toolCallId] == nil {
+            self.toolResultDetailCacheOrder.append(toolCallId)
+        }
+        self.toolResultDetailCache[toolCallId] = detail
+
+        while self.toolResultDetailCacheOrder.count > Self.maxCachedToolResultDetails {
+            let evicted = self.toolResultDetailCacheOrder.removeFirst()
+            self.toolResultDetailCache.removeValue(forKey: evicted)
         }
     }
 
