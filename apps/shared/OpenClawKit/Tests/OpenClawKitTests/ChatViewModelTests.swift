@@ -11,6 +11,23 @@ private func chatTextMessage(role: String, text: String, timestamp: Double) -> A
     ])
 }
 
+private func chatTextMessages(count: Int, startingAt timestamp: Double) -> [AnyCodable] {
+    (0..<count).map { index in
+        chatTextMessage(
+            role: index.isMultiple(of: 2) ? "user" : "assistant",
+            text: "message-\(index)",
+            timestamp: timestamp + Double(index))
+    }
+}
+
+private func chatEventMessage(role: String, text: String, timestamp: Double) -> AnyCodable {
+    AnyCodable([
+        "role": role,
+        "content": [["type": "text", "text": text]],
+        "timestamp": timestamp,
+    ])
+}
+
 private func historyPayload(
     sessionKey: String = "main",
     sessionId: String? = "sess-main",
@@ -411,6 +428,10 @@ private final class TestChatTransport: @unchecked Sendable, OpenClawChatTranspor
     func compactSessionKeys() async -> [String] {
         await self.state.compactSessionKeys
     }
+
+    func historyCallCount() async -> Int {
+        await self.state.historyCallCount
+    }
 }
 
 extension TestChatTransportState {
@@ -503,6 +524,67 @@ extension TestChatTransportState {
         }
         #expect(await MainActor.run { vm.streamingAssistantText } == nil)
         #expect(await MainActor.run { vm.pendingToolCalls.isEmpty })
+    }
+
+    @Test func chatDeltaSnapshotUpdatesStreamingWithoutHistoryRefresh() async throws {
+        let sessionId = "sess-main"
+        let history = historyPayload(sessionId: sessionId)
+        let (transport, vm) = await makeViewModel(historyResponses: [history])
+        try await loadAndWaitBootstrap(vm: vm, sessionId: sessionId)
+        await sendUserMessage(vm, text: "hello")
+        try await waitUntil("pending run starts") { await MainActor.run { vm.pendingRunCount == 1 } }
+
+        let runId = try #require(await transport.lastSentRunId())
+        transport.emit(
+            .chat(
+                OpenClawChatEventPayload(
+                    runId: runId,
+                    sessionKey: "main",
+                    state: "delta",
+                    message: chatEventMessage(
+                        role: "assistant",
+                        text: "delta snapshot",
+                        timestamp: Date().timeIntervalSince1970 * 1000),
+                    errorMessage: nil)))
+
+        try await waitUntil("delta snapshot visible") {
+            await MainActor.run { vm.streamingAssistantText == "delta snapshot" }
+        }
+        #expect(await transport.historyCallCount() == 1)
+    }
+
+    @Test func finalSnapshotCommitsLocallyWithoutHistoryRefresh() async throws {
+        let sessionId = "sess-main"
+        let history = historyPayload(sessionId: sessionId)
+        let (transport, vm) = await makeViewModel(historyResponses: [history])
+        try await loadAndWaitBootstrap(vm: vm, sessionId: sessionId)
+        await sendUserMessage(vm, text: "hello")
+        try await waitUntil("pending run starts") { await MainActor.run { vm.pendingRunCount == 1 } }
+
+        let runId = try #require(await transport.lastSentRunId())
+        transport.emit(
+            .chat(
+                OpenClawChatEventPayload(
+                    runId: runId,
+                    sessionKey: "main",
+                    state: "final",
+                    message: chatEventMessage(
+                        role: "assistant",
+                        text: "final snapshot",
+                        timestamp: Date().timeIntervalSince1970 * 1000),
+                    errorMessage: nil)))
+
+        try await waitUntil("final snapshot committed locally") {
+            await MainActor.run {
+                vm.pendingRunCount == 0 &&
+                    vm.streamingAssistantText == nil &&
+                    vm.messages.contains(where: {
+                        $0.role == "assistant" &&
+                            $0.content.compactMap(\.text).joined(separator: "\n") == "final snapshot"
+                    })
+            }
+        }
+        #expect(await transport.historyCallCount() == 1)
     }
 
     @Test func keepsOptimisticUserMessageWhenFinalRefreshReturnsOnlyAssistantHistory() async throws {
@@ -719,6 +801,49 @@ extension TestChatTransportState {
         try await waitUntil("history refresh") { await MainActor.run { vm.messages.count == 2 } }
         let firstIdAfter = try #require(await MainActor.run { vm.messages.first?.id })
         #expect(firstIdAfter == firstIdBefore)
+    }
+
+    @Test func trimsRetainedMessagesDuringBootstrapHistoryLoad() async throws {
+        let now = Date().timeIntervalSince1970 * 1000
+        let history = historyPayload(messages: chatTextMessages(count: 150, startingAt: now))
+        let (_, vm) = await makeViewModel(historyResponses: [history])
+
+        await MainActor.run { vm.load() }
+
+        try await waitUntil("trimmed bootstrap history") {
+            await MainActor.run {
+                vm.messages.count == 120 && vm.messages.first?.content.first?.text == "message-30"
+            }
+        }
+    }
+
+    @Test func trimsRetainedMessagesAfterRunHistoryRefresh() async throws {
+        let now = Date().timeIntervalSince1970 * 1000
+        let history1 = historyPayload(messages: chatTextMessages(count: 119, startingAt: now))
+        let history2 = historyPayload(messages: chatTextMessages(count: 150, startingAt: now))
+        let (transport, vm) = await makeViewModel(historyResponses: [history1, history2])
+
+        try await loadAndWaitBootstrap(vm: vm)
+        await sendUserMessage(vm, text: "newest")
+        try await waitUntil("pending run starts") { await MainActor.run { vm.pendingRunCount == 1 } }
+
+        let runId = try #require(await transport.lastSentRunId())
+        transport.emit(
+            .chat(
+                OpenClawChatEventPayload(
+                    runId: runId,
+                    sessionKey: "main",
+                    state: "final",
+                    message: nil,
+                    errorMessage: nil)))
+
+        try await waitUntil("trimmed refresh history") {
+            await MainActor.run {
+                vm.pendingRunCount == 0 &&
+                    vm.messages.count == 120 &&
+                    vm.messages.first?.content.first?.text == "message-30"
+            }
+        }
     }
 
     @Test func clearsStreamingOnExternalFinalEvent() async throws {

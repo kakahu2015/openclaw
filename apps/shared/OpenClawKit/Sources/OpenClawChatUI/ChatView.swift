@@ -10,7 +10,7 @@ public struct OpenClawChatView: View {
         case onboarding
     }
 
-    @State private var viewModel: OpenClawChatViewModel
+    private let viewModel: OpenClawChatViewModel
     @State private var scrollerBottomID = UUID()
     @State private var scrollPosition: UUID?
     @State private var showSessions = false
@@ -57,7 +57,7 @@ public struct OpenClawChatView: View {
         userAccent: Color? = nil,
         showsAssistantTrace: Bool = false)
     {
-        self._viewModel = State(initialValue: viewModel)
+        self.viewModel = viewModel
         self.showsSessionSwitcher = showsSessionSwitcher
         self.style = style
         self.markdownVariant = markdownVariant

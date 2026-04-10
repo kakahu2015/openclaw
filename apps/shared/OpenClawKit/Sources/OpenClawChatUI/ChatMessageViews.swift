@@ -1,6 +1,11 @@
 import OpenClawKit
 import Foundation
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 private enum ChatUIConstants {
     static let bubbleMaxWidth: CGFloat = 560
@@ -227,6 +232,7 @@ private struct ChatMessageBody: View {
         .shadow(color: self.bubbleShadowColor, radius: self.bubbleShadowRadius, y: self.bubbleShadowYOffset)
         .padding(.leading, self.tailPaddingLeading)
         .padding(.trailing, self.tailPaddingTrailing)
+        .copyContextMenu(text: self.copyableText)
     }
 
     private var primaryText: String {
@@ -351,6 +357,11 @@ private struct ChatMessageBody: View {
     private var bubbleShadowYOffset: CGFloat {
         self.style == .onboarding && !self.isUser ? 2 : 0
     }
+
+    private var copyableText: String? {
+        let text = self.primaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
 }
 
 private struct SlashCommandEchoCard: View {
@@ -364,13 +375,13 @@ private struct SlashCommandEchoCard: View {
             Text(self.text)
                 .font(.system(.footnote, design: .monospaced).weight(.semibold))
                 .foregroundStyle(OpenClawChatTheme.userText)
-                .textSelection(.disabled)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(Color.white.opacity(0.12))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .copyContextMenu(text: self.text)
     }
 }
 
@@ -583,6 +594,7 @@ struct ChatStreamingAssistantBubble: View {
         }
         .padding(12)
         .assistantBubbleContainerStyle()
+        .copyContextMenu(text: self.text)
     }
 }
 
@@ -633,39 +645,42 @@ extension ChatPendingToolsBubble: @MainActor Equatable {
 private struct TypingDots: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
-    @State private var animate = false
 
     var body: some View {
-        HStack(spacing: 5) {
-            ForEach(0..<3, id: \.self) { idx in
-                Circle()
-                    .fill(Color.secondary.opacity(0.55))
-                    .frame(width: 7, height: 7)
-                    .scaleEffect(self.reduceMotion ? 0.85 : (self.animate ? 1.05 : 0.70))
-                    .opacity(self.reduceMotion ? 0.55 : (self.animate ? 0.95 : 0.30))
-                    .animation(
-                        self.reduceMotion ? nil : .easeInOut(duration: 0.55)
-                            .repeatForever(autoreverses: true)
-                            .delay(Double(idx) * 0.16),
-                        value: self.animate)
+        TimelineView(.animation(minimumInterval: self.reduceMotion ? 0.8 : 1.0 / 30.0)) { context in
+            let phase = self.currentPhase(at: context.date)
+            HStack(spacing: 5) {
+                ForEach(0..<3, id: \.self) { idx in
+                    let emphasis = self.emphasis(for: idx, phase: phase)
+                    Circle()
+                        .fill(Color.secondary.opacity(0.34 + (0.56 * emphasis)))
+                        .frame(width: 7, height: 7)
+                        .scaleEffect(0.74 + (0.42 * emphasis))
+                        .opacity(0.28 + (0.72 * emphasis))
+                        .offset(y: self.reduceMotion ? 0 : (1.8 - (4.8 * emphasis)))
+                }
             }
-        }
-        .onAppear { self.updateAnimationState() }
-        .onDisappear { self.animate = false }
-        .onChange(of: self.scenePhase) { _, _ in
-            self.updateAnimationState()
-        }
-        .onChange(of: self.reduceMotion) { _, _ in
-            self.updateAnimationState()
         }
     }
 
-    private func updateAnimationState() {
+    private func currentPhase(at date: Date) -> Double {
         guard !self.reduceMotion, self.scenePhase == .active else {
-            self.animate = false
-            return
+            return 0
         }
-        self.animate = true
+        let cycle = date.timeIntervalSinceReferenceDate * 2.1
+        return cycle.truncatingRemainder(dividingBy: 3.0)
+    }
+
+    private func emphasis(for index: Int, phase: Double) -> Double {
+        guard !self.reduceMotion, self.scenePhase == .active else {
+            return index == 0 ? 0.7 : 0.35
+        }
+        let distance = min(
+            abs(Double(index) - phase),
+            abs(Double(index) - phase + 3.0),
+            abs(Double(index) - phase - 3.0))
+        let normalized = max(0, 1.0 - min(distance, 1.15) / 1.15)
+        return normalized
     }
 }
 
@@ -687,5 +702,31 @@ private struct ChatAssistantTextBody: View {
                     textColor: OpenClawChatTheme.assistantText)
             }
         }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func copyContextMenu(text: String?) -> some View {
+        if let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            self.contextMenu {
+                Button("Copy", systemImage: "doc.on.doc") {
+                    ChatCopyboard.copy(text)
+                }
+            }
+        } else {
+            self
+        }
+    }
+}
+
+private enum ChatCopyboard {
+    static func copy(_ text: String) {
+#if canImport(UIKit)
+        UIPasteboard.general.string = text
+#elseif canImport(AppKit)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+#endif
     }
 }

@@ -4,6 +4,7 @@ import SwiftUI
 
 #if !os(macOS)
 import PhotosUI
+import UIKit
 import UniformTypeIdentifiers
 #endif
 
@@ -64,7 +65,7 @@ struct OpenClawChatComposer: View {
 
     #if !os(macOS)
     @State private var pickerItems: [PhotosPickerItem] = []
-    @FocusState private var isFocused: Bool
+    @State private var isFocused = false
     #else
     @State private var shouldFocusTextView = false
     #endif
@@ -257,30 +258,23 @@ struct OpenClawChatComposer: View {
     }
 
     private var editor: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            self.editorOverlay
-
+        VStack(alignment: .leading, spacing: 5) {
             if !self.slashSuggestions.isEmpty {
                 self.slashSuggestionsView
             }
 
-            if !self.isComposerCompacted {
-                Rectangle()
-                    .fill(OpenClawChatTheme.divider)
-                    .frame(height: 1)
-                    .padding(.horizontal, 2)
-            }
-
-            HStack(alignment: .center, spacing: 8) {
-                if self.showsConnectionPill {
-                    self.connectionPill
-                }
-                Spacer(minLength: 0)
+            HStack(alignment: .bottom, spacing: 6) {
+                self.editorOverlay
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 self.sendButton
             }
+
+            if self.showsConnectionPill {
+                self.connectionPill
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(OpenClawChatTheme.composerField)
@@ -294,17 +288,14 @@ struct OpenClawChatComposer: View {
         HStack(spacing: 6) {
             Circle()
                 .fill(self.viewModel.healthOK ? .green : .orange)
-                .frame(width: 7, height: 7)
+                .frame(width: 6, height: 6)
             Text(self.activeSessionLabel)
                 .font(.caption2.weight(.semibold))
             Text(self.viewModel.healthOK ? "Connected" : "Connecting…")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(OpenClawChatTheme.subtleCard)
-        .clipShape(Capsule())
+        .padding(.horizontal, 1)
     }
 
     private var activeSessionLabel: String {
@@ -320,6 +311,7 @@ struct OpenClawChatComposer: View {
                     .foregroundStyle(.tertiary)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 4)
+                    .allowsHitTesting(false)
             }
 
             #if os(macOS)
@@ -334,20 +326,33 @@ struct OpenClawChatComposer: View {
                 })
             .frame(minHeight: self.textMinHeight, idealHeight: self.textMinHeight, maxHeight: self.textMaxHeight)
             .padding(.horizontal, 4)
-            .padding(.vertical, 3)
+            .padding(.vertical, 2)
             #else
-            TextEditor(text: self.$viewModel.input)
-                .font(.system(size: 15))
-                .scrollContentBackground(.hidden)
-                .frame(
-                    minHeight: self.textMinHeight,
-                    idealHeight: self.textMinHeight,
-                    maxHeight: self.textMaxHeight)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 4)
-                .focused(self.$isFocused)
+            ChatComposerTextView(
+                text: self.$viewModel.input,
+                isFocused: Binding(
+                    get: { self.isFocused },
+                    set: { self.isFocused = $0 }),
+                minHeight: self.textMinHeight,
+                maxHeight: self.textMaxHeight,
+                onSend: {
+                    if self.viewModel.canSend {
+                        self.viewModel.send()
+                    }
+                })
+                .frame(minHeight: self.textMinHeight, maxHeight: self.textMaxHeight, alignment: .topLeading)
+                .padding(.horizontal, 2)
+                .padding(.vertical, 0)
             #endif
         }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 1)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(OpenClawChatTheme.composerBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(OpenClawChatTheme.composerBorder.opacity(0.7))))
     }
 
     private var slashSuggestionsView: some View {
@@ -376,7 +381,9 @@ struct OpenClawChatComposer: View {
                 }
             }
         }
-        .frame(maxHeight: 220)
+        .frame(maxHeight: 176)
+        .padding(.horizontal, 2)
+        .padding(.top, 2)
         .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
@@ -390,12 +397,12 @@ struct OpenClawChatComposer: View {
                         ProgressView().controlSize(.mini)
                     } else {
                         Image(systemName: "stop.fill")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: 12, weight: .semibold))
                     }
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
-                .padding(6)
+                .frame(width: 28, height: 28)
                 .background(Circle().fill(Color.red))
                 .disabled(self.viewModel.isAborting)
             } else {
@@ -406,12 +413,12 @@ struct OpenClawChatComposer: View {
                         ProgressView().controlSize(.mini)
                     } else {
                         Image(systemName: "arrow.up")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: 12, weight: .semibold))
                     }
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
-                .padding(6)
+                .frame(width: 28, height: 28)
                 .background(Circle().fill(Color.accentColor))
                 .disabled(!self.viewModel.canSend)
             }
@@ -430,7 +437,7 @@ struct OpenClawChatComposer: View {
     }
 
     private var showsToolbar: Bool {
-        self.style == .standard && !self.isComposerCompacted
+        self.style == .standard
     }
 
     private var showsAttachments: Bool {
@@ -438,31 +445,27 @@ struct OpenClawChatComposer: View {
     }
 
     private var showsConnectionPill: Bool {
-        self.style == .standard && !self.isComposerCompacted
+        self.style == .standard
     }
 
     private var composerPadding: CGFloat {
-        self.style == .onboarding ? 5 : (self.isComposerCompacted ? 4 : 6)
+        self.style == .onboarding ? 5 : 6
     }
 
     private var editorPadding: CGFloat {
-        self.style == .onboarding ? 5 : (self.isComposerCompacted ? 4 : 6)
+        self.style == .onboarding ? 4 : 2
     }
 
     private var textMinHeight: CGFloat {
-        self.style == .onboarding ? 24 : 28
+        self.style == .onboarding ? 17 : 17
     }
 
     private var textMaxHeight: CGFloat {
-        self.style == .onboarding ? 52 : 64
+        self.style == .onboarding ? 60 : 84
     }
 
     private var isComposerCompacted: Bool {
-        #if os(macOS)
         false
-        #else
-        self.style == .standard && self.isFocused
-        #endif
     }
 
     private var slashSuggestions: [SlashCommandPreset] {
@@ -580,6 +583,107 @@ private struct SlashCommandPreset: Identifiable {
 
     var id: String { self.name }
 }
+
+#if !os(macOS)
+private struct ChatComposerTextView: UIViewRepresentable {
+    @Binding var text: String
+    @Binding var isFocused: Bool
+    let minHeight: CGFloat
+    let maxHeight: CGFloat
+    var onSend: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeUIView(context: Context) -> UITextView {
+        let textView = ChatComposerUITextView()
+        textView.delegate = context.coordinator
+        textView.backgroundColor = .clear
+        textView.font = .systemFont(ofSize: 15)
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.isUserInteractionEnabled = true
+        textView.textContainerInset = UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        textView.textContainer.lineFragmentPadding = 0
+        textView.isScrollEnabled = false
+        textView.showsVerticalScrollIndicator = false
+        textView.showsHorizontalScrollIndicator = false
+        textView.returnKeyType = .send
+        textView.enablesReturnKeyAutomatically = true
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textView.text = self.text
+        return textView
+    }
+
+    func updateUIView(_ textView: UITextView, context: Context) {
+        if textView.text != self.text {
+            context.coordinator.isProgrammaticUpdate = true
+            textView.text = self.text
+            context.coordinator.isProgrammaticUpdate = false
+        }
+
+        let fittingSize = CGSize(width: textView.bounds.width > 0 ? textView.bounds.width : UIScreen.main.bounds.width, height: .greatestFiniteMagnitude)
+        let measuredHeight = textView.sizeThatFits(fittingSize).height
+        textView.isScrollEnabled = measuredHeight > self.maxHeight
+
+        if self.isFocused, !textView.isFirstResponder {
+            textView.becomeFirstResponder()
+        } else if !self.isFocused, textView.isFirstResponder {
+            textView.resignFirstResponder()
+        }
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: ChatComposerTextView
+        var isProgrammaticUpdate = false
+
+        init(_ parent: ChatComposerTextView) {
+            self.parent = parent
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            guard !self.isProgrammaticUpdate else { return }
+            self.parent.text = textView.text
+        }
+
+        func textView(
+            _ textView: UITextView,
+            shouldChangeTextIn range: NSRange,
+            replacementText text: String)
+            -> Bool
+        {
+            guard text == "\n", textView.markedTextRange == nil else { return true }
+            self.parent.onSend()
+            return false
+        }
+
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            if !self.parent.isFocused {
+                self.parent.isFocused = true
+            }
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            if self.parent.isFocused {
+                self.parent.isFocused = false
+            }
+        }
+    }
+}
+
+private final class ChatComposerUITextView: UITextView {
+    override var canBecomeFirstResponder: Bool { true }
+
+    override func paste(_ sender: Any?) {
+        super.paste(sender)
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        return super.canPerformAction(action, withSender: sender)
+    }
+}
+#endif
 
 #if os(macOS)
 import AppKit

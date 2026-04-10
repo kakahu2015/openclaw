@@ -54,11 +54,7 @@ private struct ChatMarkdownStyle: ViewModifier {
         .foregroundStyle(self.textColor)
         .textual.inlineStyle(self.inlineStyle)
 
-        #if os(iOS)
         styled
-        #else
-        styled.textual.textSelection(.enabled)
-        #endif
     }
 
     private var inlineStyle: InlineStyle {
