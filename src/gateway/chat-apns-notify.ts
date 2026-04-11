@@ -65,40 +65,35 @@ export async function maybeSendChatReplyApnsAlert(params: {
       return;
     }
 
-    const result =
-      registration.transport === "relay"
-        ? await (async () => {
-            const relay = resolveApnsRelayConfigFromEnv(process.env, cfg.gateway);
-            if (!relay.ok) {
-              params.logWarn?.(`chat APNs relay unavailable device=${deviceId}: ${relay.error}`);
-              return null;
-            }
-            return await sendApnsAlert({
-              registration,
-              nodeId: deviceId,
-              title: CHAT_REPLY_APNS_TITLE,
-              body,
-              relayConfig: relay.value,
-            });
-          })()
-        : await (async () => {
-            const auth = await resolveApnsAuthConfigFromEnv(process.env);
-            if (!auth.ok) {
-              params.logWarn?.(`chat APNs auth unavailable device=${deviceId}: ${auth.error}`);
-              return null;
-            }
-            return await sendApnsAlert({
-              registration,
-              nodeId: deviceId,
-              title: CHAT_REPLY_APNS_TITLE,
-              body,
-              auth: auth.value,
-            });
-          })();
-
-    if (!result) {
-      return;
+    let result;
+    if (registration.transport === "relay") {
+      const relay = resolveApnsRelayConfigFromEnv(process.env, cfg.gateway);
+      if (!relay.ok) {
+        params.logWarn?.(`chat APNs relay unavailable device=${deviceId}: ${relay.error}`);
+        return;
+      }
+      result = await sendApnsAlert({
+        registration,
+        nodeId: deviceId,
+        title: CHAT_REPLY_APNS_TITLE,
+        body,
+        relayConfig: relay.value,
+      });
+    } else {
+      const auth = await resolveApnsAuthConfigFromEnv(process.env);
+      if (!auth.ok) {
+        params.logWarn?.(`chat APNs auth unavailable device=${deviceId}: ${auth.error}`);
+        return;
+      }
+      result = await sendApnsAlert({
+        registration,
+        nodeId: deviceId,
+        title: CHAT_REPLY_APNS_TITLE,
+        body,
+        auth: auth.value,
+      });
     }
+
     if (
       shouldClearStoredApnsRegistration({
         registration,
